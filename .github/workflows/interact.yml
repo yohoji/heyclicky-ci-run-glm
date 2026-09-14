@@ -13,9 +13,9 @@ on:
         description: "Semicolon-separated x,y clicks in 1024x768 space, applied in order"
         default: "517,486;483,421"
       dmg_url:
-        description: "Direct .dmg URL (blank = Sparkle appcast)"
+        description: "Direct .dmg URL (blank = Sparkle appcast). Default pinned to v1.0.48: the driver's clicks were built for this build — 1.0.49+ add a 'Pick the style' screen and a different screen-access flow."
         required: false
-        default: ""
+        default: "https://github.com/farzaa/clicky-releases/releases/download/v1.0.48/HeyClicky.dmg"
 
 jobs:
   interact:
