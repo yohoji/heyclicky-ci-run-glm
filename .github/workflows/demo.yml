@@ -213,7 +213,7 @@ jobs:
           # Record to .mkv: Matroska stays playable even if the recorder is cut
           # off (mp4 needs a clean finalize for its moov atom, which SIGKILL broke).
           ffmpeg -nostdin -y -f avfoundation -capture_cursor 1 -framerate 12 \
-            -i "Capture screen 0:BlackHole 2ch" -t 800 -pix_fmt yuv420p \
+            -i "Capture screen 0:BlackHole 2ch" -t 1500 -pix_fmt yuv420p \
             -c:v libx264 -preset ultrafast -c:a aac \
             evidence/av.mkv > evidence/av.log 2>&1 &
           AVVID=$!
@@ -329,27 +329,60 @@ jobs:
           cliclick c:500,608 || true       # click "BlackHole 2ch"
           sleep 1
           screencapture -x evidence/shots/after-device.png 2>/dev/null || true
-          # ---- Skip the guided demo to reach the LIVE app -----------------
-          # The demo's step-1 mic check depends on the flaky BlackHole loopback and
-          # intermittently blocks the whole walkthrough. The TEXT trigger needs no
-          # mic, so skip straight to the live app and test it there.
-          echo "clicking 'Skip demo' to reach the live app"
-          sleep 2
-          cliclick c:709,119 || true      # "Skip demo" (top-right of the demo modal)
-          sleep 6
-          screencapture -x evidence/shots/after-skip.png 2>/dev/null || true
-          # If a follow-up "Let's start"/greeting button appears, nudge it, then let
-          # the app settle into its live/home state.
-          for s in 1 2 3; do
-            cliclick c:511,124 || true; sleep 2
-            screencapture -x "evidence/shots/live-settle-${s}.png" 2>/dev/null || true
+          # ---- Play the guided demo through (no skipping) ------------------
+          # Step 1/8 is the mic check and the device dropdown was just switched
+          # to BlackHole 2ch, so feed it audio: a background feeder plays the
+          # prepared say-clips round-robin (system output = BlackHole = the
+          # app's input, so any listening step hears a clip within ~20s). The
+          # main loop clicks whatever blue button the demo puts up (Continue /
+          # Next / Start) whenever it is on screen and stationary, and stops
+          # when nothing has been clickable for ~1 min after we have advanced,
+          # or when the ~8 min budget is spent.
+          echo "feeding the demo clips and driving the demo steps..."
+          ( for r in 1 2 3 4 5 6 7 8; do
+              for f in clip name draw circle dictate; do
+                afplay "$HOME/$f.aiff" 2>/dev/null || true
+                sleep 15
+              done
+            done ) &
+          CLIPS=$!
+          advanced=0; idleStreak=0; lastXY=""
+          for i in $(seq 1 90); do
+            screencapture -x /tmp/cur.png 2>/dev/null || true
+            R=$(swift /tmp/find_target.swift /tmp/cur.png classify 2>/dev/null || echo none)
+            MODE="${R%% *}"; XY="${R#* }"
+            echo "demo iter $i: $R (advanced=$advanced idle=$idleStreak)"
+            case "$MODE" in
+              dialog)
+                cliclick c:${XY%,*},${XY#*,} || true
+                advanced=$((advanced+1)); idleStreak=0 ;;
+              blue)
+                if [ "$XY" = "$lastXY" ]; then
+                  idleStreak=$((idleStreak+1))   # same spot as last iter; don't hammer it
+                else
+                  cliclick c:${XY%,*},${XY#*,} || true
+                  advanced=$((advanced+1)); idleStreak=0
+                fi
+                lastXY="$XY" ;;
+              *)
+                # nothing clickable (or Safari being driven by the demo)
+                idleStreak=$((idleStreak+1)) ;;
+            esac
+            screencapture -x "evidence/shots/demo-$(printf %02d "$i").png" 2>/dev/null || true
+            if [ "$advanced" -ge 2 ] && [ "$idleStreak" -ge 12 ]; then
+              echo "demo done (quiet) after $i iters (advanced=$advanced)"; break
+            fi
+            sleep 4
           done
-          sleep 3
+          kill "$CLIPS" 2>/dev/null || true
+          # The text toggle is ignored while the app is speaking, so let the
+          # walkthrough voice finish before trying it.
+          echo "letting the demo voice finish..."
+          sleep 50
           # ---- TEXT interaction: double-tap Control to type instead of talk ----
-          # The app is now live. Stop the voice audio first (so it isn't
-          # "listening"), then double-tap Control to open the text box, type a
-          # message, send it, and record the agent's reply.
-          kill "$AUD" 2>/dev/null || true
+          # The app is live and quiet (the demo voice was waited out above).
+          # Double-tap Control to open the text box, type a message, send it,
+          # and record the agent's reply.
           sleep 2
           # Clean control-only double-tap per the decompiled monitor: clear all
           # modifiers first (0.4s hold max, 0.5s between taps, Control-only).
@@ -377,9 +410,8 @@ jobs:
             screencapture -x "evidence/shots/text-resp-${t}.png" 2>/dev/null || true
             sleep 5
           done
-          # Stop the continuous audio feed and the frame-burst recorder, then
-          # stitch the frames into an mp4. framerate 3 keeps it watchable.
-          kill "$AUD" 2>/dev/null || true
+          # Stop the frame-burst recorder, then stitch the frames into an mp4.
+          # framerate 3 keeps it watchable.
           # Stop the ffmpeg av recorder with SIGINT so it writes a valid mp4.
           kill -INT "$AVVID" 2>/dev/null || true
           sleep 5; kill -9 "$AVVID" 2>/dev/null || true
