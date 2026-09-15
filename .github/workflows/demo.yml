@@ -20,7 +20,7 @@ on:
 jobs:
   interact:
     runs-on: macos-latest
-    timeout-minutes: 30   # hard cap so a wedged step can never hang for hours
+    timeout-minutes: 40   # hard cap so a wedged step can never hang for hours
     steps:
       - name: Environment
         run: |
@@ -231,12 +231,28 @@ jobs:
           # ~90s so a failed auth can't eat the job budget and get us cancelled.
           AUTHED=0
           for i in $(seq 1 30); do
-            if log show --predicate 'subsystem == "com.humansongs.clicky"' --last 40s 2>/dev/null | grep -q "Authenticated as"; then
+            # --info/--debug: on v1.0.48 the marker logs at info level, which a
+            # default-level `log show` never returns (run 34904667774's false WARN).
+            if log show --predicate 'subsystem == "com.humansongs.clicky"' --info --debug --last 40s 2>/dev/null | grep -qiE "authenticated as|signed in"; then
               echo "auth confirmed after ~$((i*3))s"; AUTHED=1; break
             fi
             sleep 3
           done
-          [ "$AUTHED" = 1 ] || echo "WARN: auth marker not seen; proceeding anyway"
+          if [ "$AUTHED" != 1 ]; then
+            # The first callback can be lost if it races the app's URL-scheme
+            # registration right after launch. Re-fire it once before giving up.
+            echo "auth not confirmed yet; re-firing the token callback once"
+            { set +x; } 2>/dev/null
+            open "clicky://auth-callback#access_token=${AT}&refresh_token=${RT}&expires_in=3600&token_type=bearer"
+            set -x
+            for i in $(seq 1 20); do
+              if log show --predicate 'subsystem == "com.humansongs.clicky"' --info --debug --last 40s 2>/dev/null | grep -qiE "authenticated as|signed in"; then
+                echo "auth confirmed on retry after ~$((i*3))s"; AUTHED=1; break
+              fi
+              sleep 3
+            done
+          fi
+          [ "$AUTHED" = 1 ] || echo "WARN: auth marker not seen after retry; proceeding anyway"
           sleep 12   # let the post-sign-in survey render and settle
           screencapture -x evidence/shots/00-start.png 2>/dev/null || true
           # ---- STATE-AWARE onboarding driver ------------------------------
@@ -329,6 +345,13 @@ jobs:
           cliclick c:500,608 || true       # click "BlackHole 2ch"
           sleep 1
           screencapture -x evidence/shots/after-device.png 2>/dev/null || true
+          # Belt-and-suspenders: redo the selection once (idempotent) in case the
+          # first dropdown click landed before the menu finished opening.
+          cliclick c:511,519 || true
+          sleep 1
+          cliclick c:500,608 || true
+          sleep 1
+          screencapture -x evidence/shots/after-device-2.png 2>/dev/null || true
           # ---- Play the guided demo through (no skipping) ------------------
           # Step 1/8 is the mic check and the device dropdown was just switched
           # to BlackHole 2ch, so feed it audio: a background feeder plays the
@@ -338,6 +361,11 @@ jobs:
           # Next / Start) whenever it is on screen and stationary, and stops
           # when nothing has been clickable for ~1 min after we have advanced,
           # or when the ~8 min budget is spent.
+          # Re-assert the audio route (idempotent): the feeder plays into the
+          # system output, which must be BlackHole for the app to hear it.
+          SwitchAudioSource -t input  -s "BlackHole 2ch" || true
+          SwitchAudioSource -t output -s "BlackHole 2ch" || true
+          echo "audio now: $(SwitchAudioSource -c 2>/dev/null || echo unknown)"
           echo "feeding the demo clips and driving the demo steps..."
           ( for r in 1 2 3 4 5 6 7 8; do
               for f in clip name draw circle dictate; do
@@ -357,13 +385,18 @@ jobs:
                 cliclick c:${XY%,*},${XY#*,} || true
                 advanced=$((advanced+1)); idleStreak=0 ;;
               blue)
-                if [ "$XY" = "$lastXY" ]; then
+                YT="${XY#*,}"
+                if [ -n "$YT" ] && [ "$YT" -lt 160 ] 2>/dev/null; then
+                  # Top-strip blue = notch CTA / overlay cursor / a skip link.
+                  # Never auto-click those — the demo is played, not skipped.
+                  idleStreak=$((idleStreak+1)); lastXY="$XY"
+                elif [ "$XY" = "$lastXY" ]; then
                   idleStreak=$((idleStreak+1))   # same spot as last iter; don't hammer it
                 else
                   cliclick c:${XY%,*},${XY#*,} || true
                   advanced=$((advanced+1)); idleStreak=0
-                fi
-                lastXY="$XY" ;;
+                  lastXY="$XY"
+                fi ;;
               *)
                 # nothing clickable (or Safari being driven by the demo)
                 idleStreak=$((idleStreak+1)) ;;
@@ -378,7 +411,7 @@ jobs:
           # The text toggle is ignored while the app is speaking, so let the
           # walkthrough voice finish before trying it.
           echo "letting the demo voice finish..."
-          sleep 50
+          sleep 60
           # ---- TEXT interaction: double-tap Control to type instead of talk ----
           # The app is live and quiet (the demo voice was waited out above).
           # Double-tap Control to open the text box, type a message, send it,
