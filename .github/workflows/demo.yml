@@ -347,14 +347,15 @@ jobs:
               print("\(ind)\(role) [\(enabled ? "on" : "off")] '\(label)' @ \(Int(pos.x)),\(Int(pos.y)) \(Int(size.width))x\(Int(size.height))")
             }
             if !query.isEmpty,
-               role == "AXButton" || role == "AXLink" || role == "AXMenuItem" {
+               role == "AXButton" || role == "AXLink" || role == "AXMenuItem"
+               || role == "AXTextField" {
               if label.lowercased().contains(query) {
                 hits.append(Hit(el: el, role: role, label: label,
                                 pos: pos, size: size, enabled: enabled))
               }
             }
             if mode == "cardtext", !label.isEmpty, pos.y >= 31, size.height > 0,
-               role == "AXStaticText" || role == "AXButton" {
+               role == "AXStaticText" || role == "AXButton" || role == "AXTextField" {
               texts.append(label.lowercased())
             }
             for c in axChildren(el) { walk(c, depth + 1) }
@@ -701,9 +702,9 @@ jobs:
                   CLIP="$HOME/name.aiff"
                   case "$TXT" in *"dictat"*) CLIP="$HOME/dictate.aiff" ;; esac
                   ( afplay "$CLIP" 2>/dev/null || true ) &
-                  cliclick kd:ctrl,option || true
+                  cliclick kd:ctrl,alt || true
                   sleep 8
-                  cliclick ku:ctrl,option || true
+                  cliclick ku:ctrl,alt || true
                   echo "demo gesture iter $i: hold-to-talk (${TXT:0:100})" ;;
                 *"circle"*)
                   cliclick dd:512,305 w:50 dm:572,330 dm:597,390 dm:572,450 dm:512,475 dm:452,450 dm:427,390 dm:452,330 dm:512,305 du: || true
@@ -711,6 +712,25 @@ jobs:
                 *"draw"*)
                   cliclick dd:400,330 w:50 dm:460,295 dm:520,355 dm:580,315 dm:635,370 du: || true
                   echo "demo gesture iter $i: draw squiggle (${TXT:0:100})" ;;
+                *"device"*|*"blackhole"*|*"speaker"*)
+                  # Device-pick step: the in-card dropdown sits at (511,519) with
+                  # BlackHole 2ch as its 3rd item at ~(500,608) (baseline geometry,
+                  # proven in run 35197512116).
+                  cliclick c:511,519 || true
+                  sleep 1
+                  cliclick c:500,608 || true
+                  echo "demo gesture iter $i: device select (${TXT:0:100})" ;;
+                *"type"*|*"text field"*)
+                  # Typing step: focus the card's text field via AX (label/value
+                  # match), fall back to the card's input row, then type.
+                  FXY=$(/tmp/ax_driver find "field" 2>/dev/null || echo "")
+                  case "$FXY" in
+                    *,*) cliclick c:${FXY%,*},${FXY#*,} || true ;;
+                    *)   cliclick c:511,430 || true ;;
+                  esac
+                  sleep 1
+                  cliclick t:'Hi HeyClicky, nice to meet you!' || true
+                  echo "demo gesture iter $i: typed into field (${TXT:0:100})" ;;
               esac
             fi
             screencapture -x /tmp/cur.png 2>/dev/null || true
