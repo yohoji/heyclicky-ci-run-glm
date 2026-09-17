@@ -126,12 +126,97 @@ jobs:
             y += 2
           }
           func fmt(_ cx: Double, _ cy: Double) -> String { "\(Int((cx * sx).rounded())),\(Int((cy * sy).rounded()))" }
-          func blueTarget() -> String? {
-            if bx.count < 25 { return nil }
-            let band = Int(Double(H) * 0.05); let ymax = by.max() ?? 0
+          func blueTarget(minWidth: Double = 0, xFrac: Double? = nil,
+                          yMinFrac: Double? = nil, solidFill: Double = 0) -> String? {
+            // Optional region filter: in the demo phase the browser (Gmail)
+            // sits behind the card and its own blue buttons ("Next",
+            // "Forgot email?") must never be targets.
+            var fx = [Int](); var fy = [Int]()
+            if xFrac != nil || yMinFrac != nil {
+              for i in 0..<bx.count {
+                let px = Double(bx[i]) / Double(W), py = Double(by[i]) / Double(H)
+                if let xf = xFrac, px < xf || px > 1.0 - xf { continue }
+                if let ym = yMinFrac, py < ym { continue }
+                fx.append(bx[i]); fy.append(by[i])
+              }
+            } else { fx = bx; fy = by }
+            if fx.count < 25 { return nil }
+            let band = Int(Double(H) * 0.05); let ymax = fy.max() ?? 0
             var cbx = [Int](); var cby = [Int]()
-            for i in 0..<by.count where by[i] >= ymax - band { cbx.append(bx[i]); cby.append(by[i]) }
+            for i in 0..<fy.count where fy[i] >= ymax - band { cbx.append(fx[i]); cby.append(fy[i]) }
+            // minWidth: reject narrow blue blobs — the app's wandering cursor
+            // triangle is ~20px wide; a real card button is 100+.
+            if minWidth > 0, let lo = cbx.min(), let hi = cbx.max(), Double(hi - lo) * sx < minWidth { return nil }
+            // solidFill: a solid button fills its bbox (~0.8); thin blue text
+            // ("Forgot email?") fills ~0.35 and a triangle ~0.4. Samples are
+            // on a 2x2 grid, so each one stands for 4 px.
+            if solidFill > 0, let lo = cbx.min(), let hi = cbx.max(),
+               let ylo = cby.min(), let yhi = cby.max() {
+              let area = Double((hi - lo + 2) * (yhi - ylo + 2))
+              if area > 0, Double(cbx.count) * 4.0 / area < solidFill { return nil }
+            }
             return fmt(Double(cbx.reduce(0, +)) / Double(cbx.count), Double(cby.reduce(0, +)) / Double(cby.count))
+          }
+          // The tutorial's END card ("Okay, let me show you around" + the white
+          // "Show me" pill) hangs from y=0 to ~15% height. Three gates:
+          //   1. a dark card must fill the top-centre strip (no card -> nothing
+          //      to click; Safari chrome must not be mistaken for the pill),
+          //   2. a dark card extending well BELOW the strip = the guided demo
+          //      is already playing -> NEVER touch it (never skip),
+          //   3. the pill's lower rows have card-dark 15px below them (the
+          //      white title text does not; it also sits above the scan band).
+          // Measured on run 34787663323 tutorial-end.png: card x 283-741,
+          // y 0-118; pill x 462-562, y 61-89; title whites y 12-27.
+          func showmeTarget() -> String? {
+            let xL = Int(Double(W) * 0.28), xR = Int(Double(W) * 0.72)
+            var dark = 0, total = 0
+            var y = Int(Double(H) * 0.04)
+            let yStrip = Int(Double(H) * 0.15)
+            while y < yStrip {
+              var x = xL
+              while x < xR {
+                let (r, g, b) = rgb(x, y); total += 1
+                if r < 70 && g < 70 && b < 70 { dark += 1 }
+                x += 4
+              }
+              y += 4
+            }
+            if total == 0 || dark * 4 < total * 3 { return nil }
+            var tallDark = 0
+            let yT0 = Int(Double(H) * 0.18), yT1 = Int(Double(H) * 0.31)
+            let xTL = Int(Double(W) * 0.34), xTR = Int(Double(W) * 0.66)
+            y = yT0
+            while y < yT1 {
+              var x = xTL
+              while x < xTR {
+                let (r, g, b) = rgb(x, y)
+                if r < 70 && g < 70 && b < 70 { tallDark += 1 }
+                x += 4
+              }
+              y += 4
+            }
+            if tallDark > 150 { return nil }   // demo card in progress — hands off
+            var pxs = [Int](); var pys = [Int]()
+            let yP0 = Int(Double(H) * 0.055), yP1 = Int(Double(H) * 0.125)
+            let d = Int(Double(H) * 0.02)
+            y = yP0
+            while y < yP1 {
+              var x = xL
+              while x < xR {
+                let (r, g, b) = rgb(x, y)
+                if r > 185 && g > 185 && b > 185 {
+                  let (r2, g2, b2) = rgb(x, min(H - 1, y + d))
+                  if r2 < 90 && g2 < 90 && b2 < 90 { pxs.append(x); pys.append(y) }
+                }
+                x += 2
+              }
+              y += 2
+            }
+            if pys.count < 30 { return nil }
+            let band = Int(Double(H) * 0.012); let ymax = pys.max() ?? 0
+            var bx2 = [Int](); var by2 = [Int]()
+            for i in 0..<pys.count where pys[i] >= ymax - band { bx2.append(pxs[i]); by2.append(pys[i]) }
+            return fmt(Double(bx2.reduce(0, +)) / Double(bx2.count), Double(by2.reduce(0, +)) / Double(by2.count))
           }
           // Light-region bbox (as fractions of the screen). Used to tell a small
           // centred TCC dialog from a big browser page (Safari during the tutorial).
@@ -152,6 +237,15 @@ jobs:
           switch mode {
           case "blue":  print(blueTarget() ?? "NONE")
           case "allow": print(dialogTarget(800) ?? "NONE")
+          case "showme": print(showmeTarget() ?? "NONE")
+          case "card":  // demo phase (Safari may be behind the card): a TCC
+                        // dialog, or a real card button — bottom-centre of the
+                        // notch card, blue, wide and solid (not the cursor
+                        // triangle, not Gmail's own "Next"/"Forgot email?").
+            if let d = dialogTarget(1500) { print("dialog \(d)") }
+            else if let b = blueTarget(minWidth: 40, xFrac: 0.26, yMinFrac: 0.55,
+                                       solidFill: 0.5) { print("blue \(b)") }
+            else { print("none") }
           default:      // "classify": what is on screen + where to click
             // A big light region = Safari/browser page => the tutorial has started
             // => onboarding is done. Report it so the driver stops onboarding.
@@ -161,6 +255,129 @@ jobs:
             else { print("none") }
           }
           SW
+          cat > /tmp/ax_driver.swift <<'SW2'
+          import AppKit
+          import ApplicationServices
+
+          // Usage: ax_driver trusted | dump | press <query> | find <query>
+          // Walks the Accessibility tree of com.humansongs.clicky. press/find
+          // match an AXButton/AXLink/AXMenuItem whose title/description/value
+          // contains the query (case-insensitive). AX coords are global screen
+          // points — the same space cliclick uses.
+          let args = CommandLine.arguments
+          guard args.count >= 2 else { print("USAGE"); exit(0) }
+          let mode = args[1]
+          let query = args.count > 2 ? args[2].lowercased() : ""
+
+          func trustedNow() -> Bool {
+            let k = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+            return AXIsProcessTrustedWithOptions([k: false] as CFDictionary)
+          }
+          if mode == "trusted" { print(trustedNow() ? "YES" : "NO"); exit(0) }
+
+          let apps = NSRunningApplication.runningApplications(
+            withBundleIdentifier: "com.humansongs.clicky")
+          guard let app = apps.first else { print("NOPID"); exit(0) }
+          let appEl = AXUIElementCreateApplication(app.processIdentifier)
+
+          func axStr(_ el: AXUIElement, _ a: String) -> String? {
+            var v: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(el, a as CFString, &v) == .success else { return nil }
+            return v as? String
+          }
+          func axChildren(_ el: AXUIElement) -> [AXUIElement] {
+            var v: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &v) == .success,
+                  let arr = v as? [AXUIElement] else { return [] }
+            return arr
+          }
+          func axEnabled(_ el: AXUIElement) -> Bool {
+            var v: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(el, kAXEnabledAttribute as CFString, &v) == .success,
+                  let b = v as? Bool else { return true }
+            return b
+          }
+          func axPoint(_ el: AXUIElement) -> CGPoint? {
+            var v: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(el, kAXPositionAttribute as CFString, &v) == .success,
+                  let cv = v, CFGetTypeID(cv) == AXValueGetTypeID(),
+                  AXValueGetType(cv as! AXValue) == .cgPoint else { return nil }
+            var p = CGPoint.zero
+            AXValueGetValue(cv as! AXValue, .cgPoint, &p)
+            return p
+          }
+          func axSize(_ el: AXUIElement) -> CGSize? {
+            var v: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &v) == .success,
+                  let cv = v, CFGetTypeID(cv) == AXValueGetTypeID(),
+                  AXValueGetType(cv as! AXValue) == .cgSize else { return nil }
+            var s = CGSize.zero
+            AXValueGetValue(cv as! AXValue, .cgSize, &s)
+            return s
+          }
+          func click(_ p: CGPoint) {
+            for t in [CGEventType.leftMouseDown, .leftMouseUp] {
+              if let e = CGEvent(mouseEventSource: nil, mouseType: t,
+                                 mouseCursorPosition: p, mouseButton: .left) {
+                e.post(tap: .cghidEventTap)
+                usleep(70000)
+              }
+            }
+          }
+
+          struct Hit { let el: AXUIElement; let role: String; let label: String
+                       let pos: CGPoint; let size: CGSize; let enabled: Bool }
+          var hits: [Hit] = []
+          var visited = 0
+          func walk(_ el: AXUIElement, _ depth: Int) {
+            guard visited < 1500, hits.count < 60 else { return }
+            visited += 1
+            let role = axStr(el, kAXRoleAttribute) ?? "?"
+            var parts: [String] = []
+            if let t = axStr(el, kAXTitleAttribute), !t.isEmpty { parts.append(t) }
+            if let d = axStr(el, kAXDescriptionAttribute), !d.isEmpty { parts.append(d) }
+            if let w = axStr(el, kAXValueAttribute), !w.isEmpty { parts.append(w) }
+            let label = String(parts.joined(separator: " | ").prefix(120))
+            let pos = axPoint(el) ?? CGPoint(x: -1, y: -1)
+            let size = axSize(el) ?? CGSize(width: -1, height: -1)
+            let enabled = axEnabled(el)
+            if mode == "dump" {
+              let ind = String(repeating: "  ", count: min(depth, 10))
+              print("\(ind)\(role) [\(enabled ? "on" : "off")] '\(label)' @ \(Int(pos.x)),\(Int(pos.y)) \(Int(size.width))x\(Int(size.height))")
+            }
+            if !query.isEmpty,
+               role == "AXButton" || role == "AXLink" || role == "AXMenuItem" {
+              if label.lowercased().contains(query) {
+                hits.append(Hit(el: el, role: role, label: label,
+                                pos: pos, size: size, enabled: enabled))
+              }
+            }
+            for c in axChildren(el) { walk(c, depth + 1) }
+          }
+
+          walk(appEl, 0)
+          switch mode {
+          case "dump":
+            if visited <= 1 { print("EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)") }
+          case "press", "find":
+            if visited <= 1 { print("EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)"); exit(0) }
+            guard let b = (hits.filter { $0.enabled }.first ?? hits.first) else {
+              print("NOTFOUND trusted=\(trustedNow()) scanned=\(visited)"); exit(0)
+            }
+            let cx = Int(b.pos.x + b.size.width / 2), cy = Int(b.pos.y + b.size.height / 2)
+            if mode == "find" { print("\(cx),\(cy)"); exit(0) }
+            if b.enabled, AXUIElementPerformAction(b.el, kAXPressAction as CFString) == .success {
+              print("PRESSED \(b.role) '\(b.label.prefix(60))' at \(cx),\(cy)")
+            } else if b.enabled {
+              click(CGPoint(x: Double(cx), y: Double(cy)))
+              print("CLICKED \(b.role) '\(b.label.prefix(60))' at \(cx),\(cy)")
+            } else {
+              print("PRESS-FAILED \(b.role) '\(b.label.prefix(60))' enabled=false at \(cx),\(cy)")
+            }
+          default:
+            print("USAGE"); exit(0)
+          }
+          SW2
           # ---- Pre-grant Accessibility with a real csreq, before launch ------
           # A bare TCC row (csreq NULL) is inert: tccd verifies the requesting
           # app's signature against the stored csreq blob, so a signed app is not
@@ -196,6 +413,41 @@ jobs:
           sudo sqlite3 "$SYS" "SELECT service,client,auth_value,length(csreq) FROM access WHERE client='$BID';" | tee -a evidence/tcc_write.log
           sudo killall tccd 2>/dev/null || true
           sleep 3
+          # ---- AX driver: build + self-grant Accessibility ------------------
+          # If HeyClicky's cards are AX-exposed (SwiftUI usually is), pressing
+          # buttons by accessibility tree is exact: no coords, no pixel
+          # thresholds, and AXEnabled tells us when a disabled Continue has
+          # genuinely enabled (mic bars live). The runner's TCC.db starts
+          # empty every run, so grant the freshly compiled ad-hoc driver (and
+          # osascript as a backup client) their own Accessibility rows. If
+          # trusted=NO we simply fall back to pixel mode.
+          echo "--- building AX driver ---"
+          if swiftc /tmp/ax_driver.swift -o /tmp/ax_driver 2>/tmp/axc.log; then
+            codesign --force --sign - /tmp/ax_driver 2>/dev/null || true
+            AXROW=""; AXOSA=""
+            REQ=$(codesign -d -r- /tmp/ax_driver 2>&1 | sed -n 's/^designated => //p')
+            [ -n "$REQ" ] && printf '%s' "$REQ" | csreq -r- -b /tmp/axd.csreq 2>/dev/null \
+              && AXROW=$(xxd -p /tmp/axd.csreq | tr -d '\n')
+            OREQ=$(codesign -d -r- /usr/bin/osascript 2>&1 | sed -n 's/^designated => //p')
+            [ -n "$OREQ" ] && printf '%s' "$OREQ" | csreq -r- -b /tmp/osa.csreq 2>/dev/null \
+              && AXOSA=$(xxd -p /tmp/osa.csreq | tr -d '\n')
+            if [ -n "$AXROW" ]; then
+              sudo sqlite3 "$SYS" \
+                "INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,flags) VALUES ('kTCCServiceAccessibility','/tmp/ax_driver',1,2,4,1,X'$AXROW',0);" \
+                && echo "ax_driver Accessibility row OK"
+            fi
+            if [ -n "$AXOSA" ]; then
+              sudo sqlite3 "$SYS" \
+                "INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,flags) VALUES ('kTCCServiceAccessibility','/usr/bin/osascript',1,2,4,1,X'$AXOSA',0);" \
+                && echo "osascript Accessibility row OK"
+            fi
+            sudo killall tccd 2>/dev/null || true
+            sleep 2
+            echo "AX trusted: $(/tmp/ax_driver trusted 2>/dev/null || echo no-driver)"
+          else
+            cat /tmp/axc.log || true
+            echo "AX driver build FAILED; pixel fallback only"
+          fi
           # ---- FULL-RUN screen recording (frame burst) ---------------------
           # Record the ENTIRE run by bursting screenshots (screencapture -x can
           # never wedge, unlike screencapture -V which hung on the audio device).
@@ -255,6 +507,7 @@ jobs:
           [ "$AUTHED" = 1 ] || echo "WARN: auth marker not seen after retry; proceeding anyway"
           sleep 12   # let the post-sign-in survey render and settle
           screencapture -x evidence/shots/00-start.png 2>/dev/null || true
+          /tmp/ax_driver dump > evidence/ax-early-tree.log 2>/dev/null || true
           # ---- STATE-AWARE onboarding driver ------------------------------
           # Instead of a rigid step sequence (which desynced when a screen — e.g.
           # the mic prompt — appeared late and got skipped, leaving it unclicked),
@@ -328,10 +581,39 @@ jobs:
           echo "letting the intro play out..."
           sleep 140
           screencapture -x evidence/shots/tutorial-end.png 2>/dev/null || true
-          echo "clicking notch 'Show me' CTA"
-          cliclick c:511,75 || echo "cliclick failed"
-          sleep 5
+          # Click the notch "Show me" CTA and VERIFY it worked (the end card has
+          # to disappear). A blind single click raced the button's animation in
+          # run 34973452861 — the walkthrough never started and the demo loop
+          # then stared at the card for its whole budget.
+          echo "clicking notch 'Show me' CTA (AX-first, with verify-retry)"
+          ax_ok=0
+          if [ -x /tmp/ax_driver ]; then
+            for try in 1 2 3 4 5 6; do
+              sleep 4
+              R=$(/tmp/ax_driver press "show me" 2>/dev/null || echo DRIVER-ERROR)
+              echo "ax showme try $try -> $R"
+              case "$R" in
+                PRESSED*|CLICKED*) ax_ok=1; break ;;
+                NOTFOUND*|EMPTY-TREE*|NOPID*)
+                  # Tree can't see the card — keep the dump as evidence.
+                  /tmp/ax_driver dump > evidence/ax-tree-at-showme.log 2>/dev/null || true
+                  break ;;
+                *PRESS-FAILED*|DRIVER-ERROR*) ;;   # found but disabled / transient — retry
+              esac
+            done
+          fi
+          if [ "$ax_ok" != 1 ]; then
+            for try in 1 2 3 4 5 6; do
+              sleep 4
+              screencapture -x /tmp/sm.png 2>/dev/null || true
+              SXY=$(swift /tmp/find_target.swift /tmp/sm.png showme 2>/dev/null || echo NONE)
+              echo "showme try $try -> $SXY"
+              [ "$SXY" = "NONE" ] && break
+              cliclick c:${SXY%,*},${SXY#*,} || true
+            done
+          fi
           screencapture -x evidence/shots/after-showme.png 2>/dev/null || true
+          sleep 8   # let the demo's step-1 card render before touching its dropdown
           # The app's mic dropdown defaults to "Apple Virtual Sound Device" (it
           # does NOT follow the system default), which never receives our clip.
           # Switch it to BlackHole 2ch via the dropdown + type-select so the app
@@ -374,10 +656,32 @@ jobs:
               done
             done ) &
           CLIPS=$!
-          advanced=0; idleStreak=0; lastXY=""
+          advanced=0; idleStreak=0; lastXY=""; sameCount=0
           for i in $(seq 1 90); do
+            # AX-first: press the demo card's next-step button by tree.
+            # AXEnabled guarantees we never click a dim Continue; the pixel
+            # body below stays as the fallback when the tree misses or says no.
+            ax_handled=0
+            if [ -x /tmp/ax_driver ]; then
+              for q in continue next start record done; do
+                AR=$(/tmp/ax_driver press "$q" 2>/dev/null || echo DRIVER-ERROR)
+                echo "ax demo iter $i q=$q -> $AR"
+                case "$AR" in
+                  PRESSED*|CLICKED*) ax_handled=1; break ;;
+                  *PRESS-FAILED*) break ;;        # found but disabled — wait for live bars
+                  NOTFOUND*) continue ;;
+                  *) break ;;
+                esac
+              done
+            fi
+            if [ "$ax_handled" = 1 ]; then
+              advanced=$((advanced+1)); idleStreak=0; lastXY=""; sameCount=0
+              screencapture -x "evidence/shots/demo-$(printf %02d "$advanced").png" 2>/dev/null || true
+              sleep 5
+              continue
+            fi
             screencapture -x /tmp/cur.png 2>/dev/null || true
-            R=$(swift /tmp/find_target.swift /tmp/cur.png classify 2>/dev/null || echo none)
+            R=$(swift /tmp/find_target.swift /tmp/cur.png card 2>/dev/null || echo none)
             MODE="${R%% *}"; XY="${R#* }"
             echo "demo iter $i: $R (advanced=$advanced idle=$idleStreak)"
             case "$MODE" in
@@ -389,13 +693,23 @@ jobs:
                 if [ -n "$YT" ] && [ "$YT" -lt 160 ] 2>/dev/null; then
                   # Top-strip blue = notch CTA / overlay cursor / a skip link.
                   # Never auto-click those — the demo is played, not skipped.
-                  idleStreak=$((idleStreak+1)); lastXY="$XY"
+                  idleStreak=$((idleStreak+1)); lastXY="$XY"; sameCount=0
                 elif [ "$XY" = "$lastXY" ]; then
-                  idleStreak=$((idleStreak+1))   # same spot as last iter; don't hammer it
+                  # Same spot as last iter: give the card one beat to animate,
+                  # then re-click — consecutive demo steps put their button at
+                  # the same coords, so a stationary target must still be
+                  # driven (and a click that raced the animation gets a retry).
+                  sameCount=$((sameCount+1))
+                  if [ "$sameCount" -ge 2 ]; then
+                    cliclick c:${XY%,*},${XY#*,} || true
+                    advanced=$((advanced+1)); idleStreak=0; sameCount=0
+                  else
+                    idleStreak=$((idleStreak+1))
+                  fi
                 else
                   cliclick c:${XY%,*},${XY#*,} || true
                   advanced=$((advanced+1)); idleStreak=0
-                  lastXY="$XY"
+                  lastXY="$XY"; sameCount=0
                 fi ;;
               *)
                 # nothing clickable (or Safari being driven by the demo)
@@ -412,6 +726,7 @@ jobs:
           # walkthrough voice finish before trying it.
           echo "letting the demo voice finish..."
           sleep 60
+          /tmp/ax_driver dump > evidence/ax-final-tree.log 2>/dev/null || true
           # ---- TEXT interaction: double-tap Control to type instead of talk ----
           # The app is live and quiet (the demo voice was waited out above).
           # Double-tap Control to open the text box, type a message, send it,
@@ -419,6 +734,16 @@ jobs:
           sleep 2
           # Clean control-only double-tap per the decompiled monitor: clear all
           # modifiers first (0.4s hold max, 0.5s between taps, Control-only).
+          # Last guard: the tutorial/demo card must be gone before the text
+          # toggle can work; if it is still up, keep dismissing it.
+          for try in 1 2 3 4; do
+            screencapture -x /tmp/sm.png 2>/dev/null || true
+            SXY=$(swift /tmp/find_target.swift /tmp/sm.png showme 2>/dev/null || echo NONE)
+            [ "$SXY" = "NONE" ] && break
+            echo "card still up before text trigger; clicking $SXY"
+            cliclick c:${SXY%,*},${SXY#*,} || true
+            sleep 3
+          done
           echo "clean control double-tap to toggle text input"
           cliclick ku:cmd,ctrl,alt,shift,fn || true
           sleep 1
