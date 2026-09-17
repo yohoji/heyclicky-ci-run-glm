@@ -369,7 +369,12 @@ jobs:
             print(texts.joined(separator: " ~ ").prefix(1200))
           case "press", "find":
             if visited <= 1 { print("EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)"); exit(0) }
-            guard let b = (hits.filter { $0.enabled }.first ?? hits.first) else {
+            // press must never satisfy itself with a text field (an enabled
+            // field whose placeholder contains e.g. "start" would be clicked
+            // and counted as an advance, bypassing the step's gesture);
+            // find stays field-inclusive so gestures can locate composers.
+            let cands = mode == "press" ? hits.filter { $0.role != "AXTextField" } : hits
+            guard let b = (cands.filter { $0.enabled }.first ?? cands.first) else {
               print("NOTFOUND trusted=\(trustedNow()) scanned=\(visited)"); exit(0)
             }
             let cx = Int(b.pos.x + b.size.width / 2), cy = Int(b.pos.y + b.size.height / 2)
