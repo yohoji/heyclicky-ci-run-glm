@@ -57,7 +57,7 @@ jobs:
           killall cfprefsd 2>/dev/null || true
           # One clip per demo step's spoken interaction.
           say -o "$HOME/clip.aiff"    "Testing, testing, one two three. Hey Clicky, can you hear me now?" || true
-          say -o "$HOME/name.aiff"    "Hi, my name is Yohoji." || true
+          say -o "$HOME/name.aiff"    "My name is Mohamed." || true
           say -o "$HOME/draw.aiff"    "Find and draw something interesting on my screen." || true
           say -o "$HOME/circle.aiff"  "What is this thing I circled? Tell me about it." || true
           say -o "$HOME/dictate.aiff" "This is a dictation test. Please type this sentence out for me." || true
@@ -259,7 +259,7 @@ jobs:
           import AppKit
           import ApplicationServices
 
-          // Usage: ax_driver trusted | dump | press <query> | find <query>
+          // Usage: ax_driver trusted | dump | press <query> | find <query> | cardtext
           // Walks the Accessibility tree of com.humansongs.clicky. press/find
           // match an AXButton/AXLink/AXMenuItem whose title/description/value
           // contains the query (case-insensitive). AX coords are global screen
@@ -328,6 +328,7 @@ jobs:
           struct Hit { let el: AXUIElement; let role: String; let label: String
                        let pos: CGPoint; let size: CGSize; let enabled: Bool }
           var hits: [Hit] = []
+          var texts: [String] = []
           var visited = 0
           func walk(_ el: AXUIElement, _ depth: Int) {
             guard visited < 1500, hits.count < 60 else { return }
@@ -352,6 +353,10 @@ jobs:
                                 pos: pos, size: size, enabled: enabled))
               }
             }
+            if mode == "cardtext", !label.isEmpty, pos.y >= 31, size.height > 0,
+               role == "AXStaticText" || role == "AXButton" {
+              texts.append(label.lowercased())
+            }
             for c in axChildren(el) { walk(c, depth + 1) }
           }
 
@@ -359,6 +364,8 @@ jobs:
           switch mode {
           case "dump":
             if visited <= 1 { print("EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)") }
+          case "cardtext":
+            print(texts.joined(separator: " ~ ").prefix(600))
           case "press", "find":
             if visited <= 1 { print("EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)"); exit(0) }
             guard let b = (hits.filter { $0.enabled }.first ?? hits.first) else {
@@ -679,6 +686,32 @@ jobs:
               screencapture -x "evidence/shots/demo-$(printf %02d "$advanced").png" 2>/dev/null || true
               sleep 5
               continue
+            fi
+            # Gesture steps: the demo card states its requirement in plain text
+            # and the AX tree exposes it (run 35197512116 stalled on step 2/8
+            # "This is how you talk to me": it wants Ctrl+Option HELD while the
+            # name is said — the app only listens during the hold, so clips
+            # alone never enable Continue). Gesture only while stuck (the AX
+            # press just refused a disabled Continue) and only for the first
+            # 40 idle iters of a step.
+            if [ -x /tmp/ax_driver ] && [ "$idleStreak" -lt 40 ]; then
+              TXT=$(/tmp/ax_driver cardtext 2>/dev/null || echo "")
+              case "$TXT" in
+                *"hold the keys"*|*"hold control"*|*"dictat"*)
+                  CLIP="$HOME/name.aiff"
+                  case "$TXT" in *"dictat"*) CLIP="$HOME/dictate.aiff" ;; esac
+                  ( afplay "$CLIP" 2>/dev/null || true ) &
+                  cliclick kd:ctrl,option || true
+                  sleep 8
+                  cliclick ku:ctrl,option || true
+                  echo "demo gesture iter $i: hold-to-talk (${TXT:0:100})" ;;
+                *"circle"*)
+                  cliclick dd:512,305 w:50 dm:572,330 dm:597,390 dm:572,450 dm:512,475 dm:452,450 dm:427,390 dm:452,330 dm:512,305 du: || true
+                  echo "demo gesture iter $i: circle (${TXT:0:100})" ;;
+                *"draw"*)
+                  cliclick dd:400,330 w:50 dm:460,295 dm:520,355 dm:580,315 dm:635,370 du: || true
+                  echo "demo gesture iter $i: draw squiggle (${TXT:0:100})" ;;
+              esac
             fi
             screencapture -x /tmp/cur.png 2>/dev/null || true
             R=$(swift /tmp/find_target.swift /tmp/cur.png card 2>/dev/null || echo none)
