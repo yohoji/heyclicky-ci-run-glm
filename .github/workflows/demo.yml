@@ -697,8 +697,48 @@ jobs:
             # 40 idle iters of a step.
             if [ -x /tmp/ax_driver ] && [ "$idleStreak" -lt 40 ]; then
               TXT=$(/tmp/ax_driver cardtext 2>/dev/null || echo "")
+              # Gesture per step, keyed on the card's OWN instruction text (the
+              # 8-step script lives in the binary strings; steps 2/3/4/7 need
+              # the Ctrl(=cliclick "alt")+Option combo HELD — the app only
+              # listens while it is down).
               case "$TXT" in
+                *"circle"*)
+                  # step 4 "Circle anything": hold + circle with the cursor + ask
+                  ( afplay "$HOME/circle.aiff" 2>/dev/null || true ) &
+                  cliclick kd:ctrl,alt || true
+                  sleep 2
+                  cliclick dd:512,305 w:50 dm:572,330 dm:597,390 dm:572,450 dm:512,475 dm:452,450 dm:427,390 dm:452,330 dm:512,305 du: || true
+                  sleep 3
+                  cliclick ku:ctrl,alt || true
+                  echo "demo gesture iter $i: hold+circle+ask (${TXT:0:100})" ;;
+                *"draw"*)
+                  # step 3 "I can draw": hold + ASK it to draw (the app draws)
+                  ( afplay "$HOME/draw.aiff" 2>/dev/null || true ) &
+                  cliclick kd:ctrl,alt || true
+                  sleep 8
+                  cliclick ku:ctrl,alt || true
+                  echo "demo gesture iter $i: hold+ask-to-draw (${TXT:0:100})" ;;
+                *"double-tap"*|*"not in the mood"*|*"words land here"*)
+                  # step 5 "Not in the mood to talk? Type": double-tap Control,
+                  # then type into the composer. No blind click — the box
+                  # auto-focuses and the backdrop is the Gmail page (a stray
+                  # click could hit a link).
+                  cliclick ku:cmd,ctrl,alt,shift,fn || true
+                  sleep 1
+                  cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
+                  sleep 2
+                  FXY=$(/tmp/ax_driver find "words land here" 2>/dev/null || echo "")
+                  case "$FXY" in
+                    *,*) ;;
+                    *) FXY=$(/tmp/ax_driver find "field" 2>/dev/null || echo "") ;;
+                  esac
+                  case "$FXY" in
+                    *,*) cliclick c:${FXY%,*},${FXY#*,} || true; sleep 1 ;;
+                  esac
+                  cliclick t:'Hey Claude, make me a billion-dollar app, make no mistakes' || true
+                  echo "demo gesture iter $i: double-tap+type (${TXT:0:100})" ;;
                 *"hold the keys"*|*"hold control"*|*"dictat"*)
+                  # steps 2 + 7: hold and say the name / dictate word-for-word
                   CLIP="$HOME/name.aiff"
                   case "$TXT" in *"dictat"*) CLIP="$HOME/dictate.aiff" ;; esac
                   ( afplay "$CLIP" 2>/dev/null || true ) &
@@ -706,30 +746,26 @@ jobs:
                   sleep 8
                   cliclick ku:ctrl,alt || true
                   echo "demo gesture iter $i: hold-to-talk (${TXT:0:100})" ;;
-                *"circle"*)
-                  cliclick dd:512,305 w:50 dm:572,330 dm:597,390 dm:572,450 dm:512,475 dm:452,450 dm:427,390 dm:452,330 dm:512,305 du: || true
-                  echo "demo gesture iter $i: circle (${TXT:0:100})" ;;
-                *"draw"*)
-                  cliclick dd:400,330 w:50 dm:460,295 dm:520,355 dm:580,315 dm:635,370 du: || true
-                  echo "demo gesture iter $i: draw squiggle (${TXT:0:100})" ;;
                 *"device"*|*"blackhole"*|*"speaker"*)
                   # Device-pick step: the in-card dropdown sits at (511,519) with
-                  # BlackHole 2ch as its 3rd item at ~(500,608) (baseline geometry,
-                  # proven in run 35197512116).
+                  # BlackHole 2ch as its 3rd item at ~(500,608) (baseline
+                  # geometry, proven in run 35197512116).
                   cliclick c:511,519 || true
                   sleep 1
                   cliclick c:500,608 || true
                   echo "demo gesture iter $i: device select (${TXT:0:100})" ;;
                 *"type"*|*"text field"*)
-                  # Typing step: focus the card's text field via AX (label/value
-                  # match), fall back to the card's input row, then type.
-                  FXY=$(/tmp/ax_driver find "field" 2>/dev/null || echo "")
+                  # Typing variant without the double-tap prompt: focus the
+                  # field via AX only (no blind click), then type.
+                  FXY=$(/tmp/ax_driver find "words land here" 2>/dev/null || echo "")
                   case "$FXY" in
-                    *,*) cliclick c:${FXY%,*},${FXY#*,} || true ;;
-                    *)   cliclick c:511,430 || true ;;
+                    *,*) ;;
+                    *) FXY=$(/tmp/ax_driver find "field" 2>/dev/null || echo "") ;;
                   esac
-                  sleep 1
-                  cliclick t:'Hi HeyClicky, nice to meet you!' || true
+                  case "$FXY" in
+                    *,*) cliclick c:${FXY%,*},${FXY#*,} || true; sleep 1 ;;
+                  esac
+                  cliclick t:'Hey Claude, make me a billion-dollar app, make no mistakes' || true
                   echo "demo gesture iter $i: typed into field (${TXT:0:100})" ;;
               esac
               # Visibility for any step no gesture matched: print the card's
