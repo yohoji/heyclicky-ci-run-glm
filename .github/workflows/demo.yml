@@ -478,7 +478,7 @@ jobs:
           # Record to .mkv: Matroska stays playable even if the recorder is cut
           # off (mp4 needs a clean finalize for its moov atom, which SIGKILL broke).
           ffmpeg -nostdin -y -f avfoundation -capture_cursor 1 -framerate 12 \
-            -i "Capture screen 0:BlackHole 2ch" -t 1500 -pix_fmt yuv420p \
+            -i "Capture screen 0:BlackHole 2ch" -t 2100 -pix_fmt yuv420p \
             -c:v libx264 -preset ultrafast -c:a aac \
             evidence/av.mkv > evidence/av.log 2>&1 &
           AVVID=$!
