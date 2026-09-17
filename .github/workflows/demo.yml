@@ -366,7 +366,7 @@ jobs:
           case "dump":
             if visited <= 1 { print("EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)") }
           case "cardtext":
-            print(texts.joined(separator: " ~ ").prefix(600))
+            print(texts.joined(separator: " ~ ").prefix(1200))
           case "press", "find":
             if visited <= 1 { print("EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)"); exit(0) }
             guard let b = (hits.filter { $0.enabled }.first ?? hits.first) else {
@@ -732,6 +732,11 @@ jobs:
                   cliclick t:'Hi HeyClicky, nice to meet you!' || true
                   echo "demo gesture iter $i: typed into field (${TXT:0:100})" ;;
               esac
+              # Visibility for any step no gesture matched: print the card's
+              # own text so the next iteration of fixes starts from evidence.
+              if [ -n "$TXT" ] && [ $((i % 5)) -eq 0 ]; then
+                echo "demo cardtext iter $i: ${TXT:0:250}"
+              fi
             fi
             screencapture -x /tmp/cur.png 2>/dev/null || true
             R=$(swift /tmp/find_target.swift /tmp/cur.png card 2>/dev/null || echo none)
