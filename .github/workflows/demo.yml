@@ -355,7 +355,7 @@ jobs:
               }
             }
             if mode == "cardtext", !label.isEmpty, pos.y >= 31, size.height > 0,
-               role == "AXStaticText" || role == "AXButton" || role == "AXTextField" {
+               role == "AXStaticText" || role == "AXButton" || role == "AXMenuButton" || role == "AXTextField" {
               texts.append(label.lowercased())
             }
             for c in axChildren(el) { walk(c, depth + 1) }
@@ -491,6 +491,12 @@ jobs:
             -c:v libx264 -preset ultrafast -c:a aac \
             evidence/av.mkv > evidence/av.log 2>&1 &
           AVVID=$!
+          # Set the audio route BEFORE the app launches: the demo engine caches
+          # "System Default" at launch (run 353306: SwitchAudioSource ran 80s
+          # after launch and the card still showed the pre-launch default).
+          SwitchAudioSource -t input  -s "BlackHole 2ch" || true
+          SwitchAudioSource -t output -s "BlackHole 2ch" || true
+          echo "pre-launch audio: $(SwitchAudioSource -c 2>/dev/null || echo unknown)"
           open "$HOME/HeyClicky.app"
           sleep 18
           { set +x; } 2>/dev/null
@@ -638,24 +644,39 @@ jobs:
           sleep 8   # let the demo's step-1 card render before touching its dropdown
           # The app's mic dropdown defaults to "Apple Virtual Sound Device" (it
           # does NOT follow the system default), which never receives our clip.
-          # Switch it to BlackHole 2ch via the dropdown + type-select so the app
-          # listens on the device the clip plays into.
+          # Synthetic CGEvents into an open NSMenu are unreliable — run 353306's
+          # after-device shots show the row highlight but the checkmark stayed
+          # on System Default. So: open the menu, AXPress the "BlackHole 2ch"
+          # AXMenuItem, then VERIFY the dropdown's label in the tree; retry 4x,
+          # then fall back to the original pixel clicks.
+          select_bh() {
+            local t R
+            for t in 1 2 3 4; do
+              cliclick c:511,519 || true      # open the device dropdown
+              sleep 1
+              [ "$t" = 1 ] && screencapture -x evidence/shots/dropdown-open.png 2>/dev/null || true
+              R=$(/tmp/ax_driver press "blackhole" 2>/dev/null || echo DRIVER-ERROR)
+              echo "bh select try $t -> $R"
+              sleep 1
+              if /tmp/ax_driver dump 2>/dev/null | grep -q "AXMenuButton.*'BlackHole 2ch'"; then
+                echo "dropdown verified: BlackHole 2ch selected"
+                return 0
+              fi
+            done
+            cliclick c:511,519 || true
+            sleep 1
+            cliclick c:500,608 || true       # pixel fallback: "BlackHole 2ch"
+            sleep 1
+            if /tmp/ax_driver dump 2>/dev/null | grep -q "AXMenuButton.*'BlackHole 2ch'"; then
+              echo "dropdown verified via pixel fallback"
+              return 0
+            fi
+            echo "WARN: dropdown still not on BlackHole"
+            return 1
+          }
           echo "selecting BlackHole 2ch in the app mic dropdown..."
-          cliclick c:511,519 || true      # open the device dropdown
-          sleep 1
-          screencapture -x evidence/shots/dropdown-open.png 2>/dev/null || true
-          # Menu opens below the pill: System Default / Apple Virtual / BlackHole
-          # 2ch / Null. BlackHole is the 3rd item at ~y=608.
-          cliclick c:500,608 || true       # click "BlackHole 2ch"
-          sleep 1
+          select_bh || true
           screencapture -x evidence/shots/after-device.png 2>/dev/null || true
-          # Belt-and-suspenders: redo the selection once (idempotent) in case the
-          # first dropdown click landed before the menu finished opening.
-          cliclick c:511,519 || true
-          sleep 1
-          cliclick c:500,608 || true
-          sleep 1
-          screencapture -x evidence/shots/after-device-2.png 2>/dev/null || true
           # ---- Play the guided demo through (no skipping) ------------------
           # Step 1/8 is the mic check and the device dropdown was just switched
           # to BlackHole 2ch, so feed it audio: a background feeder plays the
@@ -760,14 +781,14 @@ jobs:
                   sleep 8
                   cliclick ku:ctrl,alt || true
                   echo "demo gesture iter $i: hold-to-talk (${TXT:0:100})" ;;
-                *"device"*|*"blackhole"*|*"speaker"*)
-                  # Device-pick step: the in-card dropdown sits at (511,519) with
-                  # BlackHole 2ch as its 3rd item at ~(500,608) (baseline
-                  # geometry, proven in run 35197512116).
-                  cliclick c:511,519 || true
-                  sleep 1
-                  cliclick c:500,608 || true
-                  echo "demo gesture iter $i: device select (${TXT:0:100})" ;;
+                *"apple virtual sound device"*|*"null audio device"*)
+                  # The demo card's mic dropdown is NOT on BlackHole (it caches
+                  # the launch-time system default = AVSD, which never receives
+                  # our clips). cardtext includes AXMenuButton labels, so this
+                  # fires only while the dropdown is wrong; select_bh re-picks
+                  # BlackHole via AX and verifies.
+                  select_bh || true
+                  echo "demo gesture iter $i: device reselect (${TXT:0:100})" ;;
                 *"type"*|*"text field"*)
                   # Typing variant without the double-tap prompt: focus the
                   # field via AX only (no blind click), then type.
