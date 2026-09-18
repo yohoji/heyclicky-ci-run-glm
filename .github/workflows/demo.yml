@@ -644,34 +644,45 @@ jobs:
           sleep 8   # let the demo's step-1 card render before touching its dropdown
           # The app's mic dropdown defaults to "Apple Virtual Sound Device" (it
           # does NOT follow the system default), which never receives our clip.
-          # Synthetic CGEvents into an open NSMenu are unreliable — run 353306's
-          # after-device shots show the row highlight but the checkmark stayed
-          # on System Default. So: open the menu, AXPress the "BlackHole 2ch"
-          # AXMenuItem, then VERIFY the dropdown's label in the tree; retry 4x,
-          # then fall back to the original pixel clicks.
+          # Run 353306 proved synthetic clicks into the open NSMenu don't select
+          # (row highlighted, checkmark unmoved), and run 353700 (killed at the
+          # 50-min cap) suggests AX calls against an OPEN menu can block — the
+          # menu runs a modal tracking loop. So: select via MENU TYPE-SELECT
+          # (open -> type "Blackhole" -> Return; keyboard events DO work in
+          # menu tracking), close any stuck menu on a neutral card spot, and
+          # verify the dropdown's label in the tree. Every AX call below runs
+          # through axd so a blocked driver can never eat the job budget.
+          axd() {  # axd <secs> <ax_driver args...>: bounded AX call
+            local secs=$1; shift
+            rm -f /tmp/axd.out /tmp/axd.done
+            ( /tmp/ax_driver "$@" > /tmp/axd.out 2>/dev/null; echo 1 > /tmp/axd.done ) &
+            local p=$! n=0
+            while [ ! -f /tmp/axd.done ] && [ "$n" -lt $((secs * 2)) ]; do
+              sleep 0.5; n=$((n+1))
+            done
+            if [ ! -f /tmp/axd.done ]; then pkill -P "$p" 2>/dev/null || true; fi
+            kill "$p" 2>/dev/null || true
+            wait "$p" 2>/dev/null || true
+            if [ -f /tmp/axd.done ]; then cat /tmp/axd.out; else echo AX-TIMEOUT; fi
+          }
           select_bh() {
-            local t R
-            for t in 1 2 3 4; do
+            local t
+            for t in 1 2 3; do
               cliclick c:511,519 || true      # open the device dropdown
               sleep 1
               [ "$t" = 1 ] && screencapture -x evidence/shots/dropdown-open.png 2>/dev/null || true
-              R=$(/tmp/ax_driver press "blackhole" 2>/dev/null || echo DRIVER-ERROR)
-              echo "bh select try $t -> $R"
+              cliclick t:Blackhole || true    # menu type-select -> "BlackHole 2ch"
               sleep 1
-              if /tmp/ax_driver dump 2>/dev/null | grep -q "AXMenuButton.*'BlackHole 2ch'"; then
-                echo "dropdown verified: BlackHole 2ch selected"
+              cliclick kp:return || true      # select the highlighted item
+              sleep 1
+              if axd 5 dump 2>/dev/null | grep -q "AXMenuButton.*'BlackHole 2ch'"; then
+                echo "dropdown verified: BlackHole 2ch selected (try $t)"
                 return 0
               fi
+              cliclick c:300,650 || true      # close any open menu (neutral card spot)
+              sleep 1
             done
-            cliclick c:511,519 || true
-            sleep 1
-            cliclick c:500,608 || true       # pixel fallback: "BlackHole 2ch"
-            sleep 1
-            if /tmp/ax_driver dump 2>/dev/null | grep -q "AXMenuButton.*'BlackHole 2ch'"; then
-              echo "dropdown verified via pixel fallback"
-              return 0
-            fi
-            echo "WARN: dropdown still not on BlackHole"
+            echo "WARN: dropdown still not on BlackHole after 3 type-select tries"
             return 1
           }
           echo "selecting BlackHole 2ch in the app mic dropdown..."
@@ -700,6 +711,7 @@ jobs:
             done ) &
           CLIPS=$!
           advanced=0; idleStreak=0; lastXY=""; sameCount=0
+          bhTries=0; lastBhIter=-100
           for i in $(seq 1 72); do
             # AX-first: press the demo card's next-step button by tree.
             # AXEnabled guarantees we never click a dim Continue; the pixel
@@ -707,7 +719,7 @@ jobs:
             ax_handled=0
             if [ -x /tmp/ax_driver ]; then
               for q in continue next start record done; do
-                AR=$(/tmp/ax_driver press "$q" 2>/dev/null || echo DRIVER-ERROR)
+                AR=$(axd 8 press "$q" 2>/dev/null || echo DRIVER-ERROR)
                 echo "ax demo iter $i q=$q -> $AR"
                 case "$AR" in
                   PRESSED*|CLICKED*) ax_handled=1; break ;;
@@ -731,7 +743,7 @@ jobs:
             # press just refused a disabled Continue) and only for the first
             # 40 idle iters of a step.
             if [ -x /tmp/ax_driver ] && [ "$idleStreak" -lt 40 ]; then
-              TXT=$(/tmp/ax_driver cardtext 2>/dev/null || echo "")
+              TXT=$(axd 8 cardtext 2>/dev/null || echo "")
               # Gesture per step, keyed on the card's OWN instruction text (the
               # 8-step script lives in the binary strings; steps 2/3/4/7 need
               # the Ctrl(=cliclick "alt")+Option combo HELD — the app only
@@ -762,10 +774,10 @@ jobs:
                   sleep 1
                   cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
                   sleep 2
-                  FXY=$(/tmp/ax_driver find "words land here" 2>/dev/null || echo "")
+                  FXY=$(axd 6 find "words land here" 2>/dev/null || echo "")
                   case "$FXY" in
                     *,*) ;;
-                    *) FXY=$(/tmp/ax_driver find "field" 2>/dev/null || echo "") ;;
+                    *) FXY=$(axd 6 find "field" 2>/dev/null || echo "") ;;
                   esac
                   case "$FXY" in
                     *,*) cliclick c:${FXY%,*},${FXY#*,} || true; sleep 1 ;;
@@ -785,17 +797,20 @@ jobs:
                   # The demo card's mic dropdown is NOT on BlackHole (it caches
                   # the launch-time system default = AVSD, which never receives
                   # our clips). cardtext includes AXMenuButton labels, so this
-                  # fires only while the dropdown is wrong; select_bh re-picks
-                  # BlackHole via AX and verifies.
-                  select_bh || true
-                  echo "demo gesture iter $i: device reselect (${TXT:0:100})" ;;
+                  # fires only while the dropdown is wrong. Rate-limited so a
+                  # failing reselect can never eat the job budget (353700).
+                  if [ "$bhTries" -lt 6 ] && [ $((i - lastBhIter)) -ge 8 ]; then
+                    bhTries=$((bhTries+1)); lastBhIter=$i
+                    select_bh || true
+                    echo "demo gesture iter $i: device reselect #$bhTries (${TXT:0:100})"
+                  fi ;;
                 *"type"*|*"text field"*)
                   # Typing variant without the double-tap prompt: focus the
                   # field via AX only (no blind click), then type.
-                  FXY=$(/tmp/ax_driver find "words land here" 2>/dev/null || echo "")
+                  FXY=$(axd 6 find "words land here" 2>/dev/null || echo "")
                   case "$FXY" in
                     *,*) ;;
-                    *) FXY=$(/tmp/ax_driver find "field" 2>/dev/null || echo "") ;;
+                    *) FXY=$(axd 6 find "field" 2>/dev/null || echo "") ;;
                   esac
                   case "$FXY" in
                     *,*) cliclick c:${FXY%,*},${FXY#*,} || true; sleep 1 ;;
