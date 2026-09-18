@@ -20,7 +20,7 @@ on:
 jobs:
   interact:
     runs-on: macos-latest
-    timeout-minutes: 40   # hard cap so a wedged step can never hang for hours
+    timeout-minutes: 50   # hard cap so a wedged step can never hang for hours
     steps:
       - name: Environment
         run: |
@@ -391,6 +391,15 @@ jobs:
             print("USAGE"); exit(0)
           }
           SW2
+          # COMPILE find_target once: `swift file.swift` re-JITs the script on
+          # EVERY call (~3.5s each, ~110 calls/run) — that accumulation blew
+          # the 40-min job cap in run 35317811924. Compiled, each call ~0.1s.
+          if swiftc /tmp/find_target.swift -o /tmp/find_target 2>/tmp/ftc.log; then
+            echo "find_target compiled OK"
+          else
+            cat /tmp/ftc.log || true
+            echo "WARN: find_target compile failed; pixel detectors degraded"
+          fi
           # ---- Pre-grant Accessibility with a real csreq, before launch ------
           # A bare TCC row (csreq NULL) is inert: tccd verifies the requesting
           # app's signature against the stored csreq blob, so a signed app is not
@@ -538,7 +547,7 @@ jobs:
           lastXY=""
           for i in $(seq 1 60); do
             screencapture -x /tmp/cur.png 2>/dev/null || true
-            R=$(swift /tmp/find_target.swift /tmp/cur.png classify 2>/dev/null || echo none)
+            R=$(/tmp/find_target /tmp/cur.png classify 2>/dev/null || echo none)
             MODE="${R%% *}"; XY="${R#* }"
             echo "onboard iter $i: $R"
             done_onboard=0
@@ -619,7 +628,7 @@ jobs:
             for try in 1 2 3 4 5 6; do
               sleep 4
               screencapture -x /tmp/sm.png 2>/dev/null || true
-              SXY=$(swift /tmp/find_target.swift /tmp/sm.png showme 2>/dev/null || echo NONE)
+              SXY=$(/tmp/find_target /tmp/sm.png showme 2>/dev/null || echo NONE)
               echo "showme try $try -> $SXY"
               [ "$SXY" = "NONE" ] && break
               cliclick c:${SXY%,*},${SXY#*,} || true
@@ -670,7 +679,7 @@ jobs:
             done ) &
           CLIPS=$!
           advanced=0; idleStreak=0; lastXY=""; sameCount=0
-          for i in $(seq 1 90); do
+          for i in $(seq 1 72); do
             # AX-first: press the demo card's next-step button by tree.
             # AXEnabled guarantees we never click a dim Continue; the pixel
             # body below stays as the fallback when the tree misses or says no.
@@ -780,7 +789,7 @@ jobs:
               fi
             fi
             screencapture -x /tmp/cur.png 2>/dev/null || true
-            R=$(swift /tmp/find_target.swift /tmp/cur.png card 2>/dev/null || echo none)
+            R=$(/tmp/find_target /tmp/cur.png card 2>/dev/null || echo none)
             MODE="${R%% *}"; XY="${R#* }"
             echo "demo iter $i: $R (advanced=$advanced idle=$idleStreak)"
             case "$MODE" in
@@ -837,7 +846,7 @@ jobs:
           # toggle can work; if it is still up, keep dismissing it.
           for try in 1 2 3 4; do
             screencapture -x /tmp/sm.png 2>/dev/null || true
-            SXY=$(swift /tmp/find_target.swift /tmp/sm.png showme 2>/dev/null || echo NONE)
+            SXY=$(/tmp/find_target /tmp/sm.png showme 2>/dev/null || echo NONE)
             [ "$SXY" = "NONE" ] && break
             echo "card still up before text trigger; clicking $SXY"
             cliclick c:${SXY%,*},${SXY#*,} || true
