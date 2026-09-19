@@ -477,7 +477,7 @@ jobs:
           TO=$(command -v gtimeout || command -v timeout || true)
           run_to() { if [ -n "$TO" ]; then "$TO" "$@"; else shift; "$@"; fi; }
           mkdir -p /tmp/frames
-          ( fi=0; while :; do fi=$((fi+1)); screencapture -x "$(printf /tmp/frames/f_%05d.png "$fi")" 2>/dev/null; sleep 1; done ) &
+          ( fi=0; while :; do fi=$((fi+1)); screencapture -x "$(printf /tmp/frames/f_%05d.png "$fi")" 2>/dev/null || true; sleep 1; done ) &
           FULLVID=$!
           # ALSO record a real-time screen+AUDIO capture (ffmpeg avfoundation) so we
           # can HEAR the app speak. Audio comes from BlackHole (where the app's TTS
@@ -643,15 +643,17 @@ jobs:
           screencapture -x evidence/shots/after-showme.png 2>/dev/null || true
           sleep 8   # let the demo's step-1 card render before touching its dropdown
           # The app's mic dropdown defaults to "Apple Virtual Sound Device" (it
-          # does NOT follow the system default), which never receives our clip.
-          # Run 353306 proved synthetic clicks into the open NSMenu don't select
-          # (row highlighted, checkmark unmoved), and run 353700 (killed at the
-          # 50-min cap) suggests AX calls against an OPEN menu can block — the
-          # menu runs a modal tracking loop. So: select via MENU TYPE-SELECT
-          # (open -> type "Blackhole" -> Return; keyboard events DO work in
-          # menu tracking), close any stuck menu on a neutral card spot, and
-          # verify the dropdown's label in the tree. Every AX call below runs
-          # through axd so a blocked driver can never eat the job budget.
+          # picks its own device, NOT the system default — run 353825 had
+          # BlackHole set pre-launch and the card still resolved AVSD), and the
+          # clips fed into BlackHole are never heard until the card's control
+          # says BlackHole 2ch. Evidence so far: pixel clicks into the open
+          # NSMenu highlight but don't select (353306); type-select failed
+          # with the card visible (353825); and once Safari takes any stray
+          # click the card goes AX-alive-but-screen-hidden with Safari
+          # frontmost (353825 demo shots). So each try: re-activate HeyClicky,
+          # LOCATE the dropdown in the tree (the card moves), open it, then
+          # escalate AXPress -> hover+Return -> type-select, verifying the
+          # AXMenuButton label after each. Every AX call is bounded by axd.
           axd() {  # axd <secs> <ax_driver args...>: bounded AX call
             local secs=$1; shift
             rm -f /tmp/axd.out /tmp/axd.done
@@ -666,25 +668,54 @@ jobs:
             if [ -f /tmp/axd.done ]; then cat /tmp/axd.out; else echo AX-TIMEOUT; fi
           }
           select_bh() {
-            local t
+            local t LINE BX BY R
             for t in 1 2 3; do
-              cliclick c:511,519 || true      # open the device dropdown
+              open -a "$HOME/HeyClicky.app" 2>/dev/null || true
               sleep 1
-              [ "$t" = 1 ] && screencapture -x evidence/shots/dropdown-open.png 2>/dev/null || true
-              cliclick t:Blackhole || true    # menu type-select -> "BlackHole 2ch"
+              LINE=$(axd 6 dump 2>/dev/null | grep "AXMenuButton \[on\] 'Apple Virtual Sound Device'" | head -1)
+              BX=$(printf '%s' "$LINE" | awk '{gsub(/.*@ /,""); print $1}' | cut -d, -f1)
+              BY=$(printf '%s' "$LINE" | awk '{gsub(/.*@ /,""); print $1}' | cut -d, -f2)
+              if [ -z "$BX" ]; then
+                echo "bh try $t: dropdown not found in tree (card hidden?)"
+                cliclick kp:esc || true; sleep 1; continue
+              fi
+              BX=$((BX + 86)); BY=$((BY + 8))   # 172x16 button -> center
+              echo "bh try $t: dropdown at ${BX},${BY}"
+              cliclick c:$BX,$BY || true        # open the menu
               sleep 1
-              cliclick kp:return || true      # select the highlighted item
+              screencapture -x "evidence/shots/bh-menu-t${t}.png" 2>/dev/null || true
+              echo "bh try $t open-menu AXMenuItem rows: $(axd 5 dump 2>/dev/null | grep -c 'AXMenuItem')"
+              R=$(axd 8 press "blackhole" 2>/dev/null || echo DRIVER-ERROR)
+              echo "bh try $t axpress -> $R"
               sleep 1
               if axd 5 dump 2>/dev/null | grep -q "AXMenuButton.*'BlackHole 2ch'"; then
-                echo "dropdown verified: BlackHole 2ch selected (try $t)"
-                return 0
+                echo "dropdown verified: BlackHole 2ch selected (try $t axpress)"; return 0
               fi
-              cliclick c:300,650 || true      # close any open menu (neutral card spot)
+              cliclick m:$BX,$((BY + 89)) || true   # hover 3rd item: BlackHole 2ch
+              sleep 1
+              cliclick kp:return || true            # Return selects highlighted row
+              sleep 1
+              if axd 5 dump 2>/dev/null | grep -q "AXMenuButton.*'BlackHole 2ch'"; then
+                echo "dropdown verified: BlackHole 2ch selected (try $t hover+return)"; return 0
+              fi
+              cliclick t:Blackhole || true          # keyboard type-select fallback
+              sleep 1
+              cliclick kp:return || true
+              sleep 1
+              if axd 5 dump 2>/dev/null | grep -q "AXMenuButton.*'BlackHole 2ch'"; then
+                echo "dropdown verified: BlackHole 2ch selected (try $t typeselect)"; return 0
+              fi
+              cliclick kp:esc || true               # close any stuck menu
               sleep 1
             done
-            echo "WARN: dropdown still not on BlackHole after 3 type-select tries"
+            echo "WARN: dropdown still not on BlackHole after 3 tries"
             return 1
           }
+          # Re-assert the audio route BEFORE the selection: a system-default
+          # change right after picking the device may reset the card's
+          # dropdown, so nothing may touch the audio config afterwards.
+          SwitchAudioSource -t input  -s "BlackHole 2ch" || true
+          SwitchAudioSource -t output -s "BlackHole 2ch" || true
           echo "selecting BlackHole 2ch in the app mic dropdown..."
           select_bh || true
           screencapture -x evidence/shots/after-device.png 2>/dev/null || true
@@ -696,11 +727,9 @@ jobs:
           # main loop clicks whatever blue button the demo puts up (Continue /
           # Next / Start) whenever it is on screen and stationary, and stops
           # when nothing has been clickable for ~1 min after we have advanced,
-          # or when the ~8 min budget is spent.
-          # Re-assert the audio route (idempotent): the feeder plays into the
-          # system output, which must be BlackHole for the app to hear it.
-          SwitchAudioSource -t input  -s "BlackHole 2ch" || true
-          SwitchAudioSource -t output -s "BlackHole 2ch" || true
+          # or when the ~8 min budget is spent. (The audio route was re-asserted
+          # right before the dropdown selection above; do NOT touch it again —
+          # a default change after picking the device may reset the card.)
           echo "audio now: $(SwitchAudioSource -c 2>/dev/null || echo unknown)"
           echo "feeding the demo clips and driving the demo steps..."
           ( for r in 1 2 3 4 5 6 7 8; do
@@ -917,7 +946,8 @@ jobs:
           # Stop the ffmpeg av recorder with SIGINT so it writes a valid mp4.
           kill -INT "$AVVID" 2>/dev/null || true
           sleep 5; kill -9 "$AVVID" 2>/dev/null || true
-          ls -la evidence/av.mkv 2>/dev/null; echo "--- av.log ---"; tail -5 evidence/av.log 2>/dev/null || true
+          ls -la evidence/av.mkv 2>/dev/null || echo "no av.mkv (recorder may have failed to open the screen device)"
+          echo "--- av.log ---"; tail -5 evidence/av.log 2>/dev/null || true
           kill "$FULLVID" 2>/dev/null || true
           sleep 1
           NF=$(ls /tmp/frames/f_*.png 2>/dev/null | wc -l | tr -d ' ')
