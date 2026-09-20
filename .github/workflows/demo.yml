@@ -491,6 +491,18 @@ jobs:
             -c:v libx264 -preset ultrafast -c:a aac \
             evidence/av.mkv > evidence/av.log 2>&1 &
           AVVID=$!
+          # AUDIO-ONLY BlackHole witness: the video recorder died twice on the
+          # VM's flaky video device (IOServiceMatching AppleM2ScalerParavirt)
+          # before writing anything; an audio-only avfoundation input has no
+          # video device, so it survives. If the fed clips show up in this
+          # recording, the afplay->BlackHole loopback path is PROVEN and any
+          # remaining stall is app-side.
+          ( ffmpeg -nostdin -y -f avfoundation -i ':BlackHole 2ch' -t 2100 \
+              -c:a aac evidence/av-audio.m4a > evidence/av-audio.log 2>&1 ) &
+          AVAUD=$!
+          # Live app-log stream (log show's window kept missing the moment).
+          log stream --style compact --predicate 'processImagePath CONTAINS "HeyClicky"' > /tmp/app-stream.log 2>&1 &
+          APPLOG=$!
           # Set the audio route BEFORE the app launches: the demo engine caches
           # "System Default" at launch (run 353306: SwitchAudioSource ran 80s
           # after launch and the card still showed the pre-launch default).
@@ -677,10 +689,16 @@ jobs:
             wait "$p" 2>/dev/null || true
             if [ -f /tmp/axd.done ]; then cat /tmp/axd.out; else echo AX-TIMEOUT; fi
           }
-          select_bh() {
+          select_bh() {  # select_bh [ax-press-query] [target-label] [hover-offset] [type-select]
+            local Q="${1:-blackhole}" L="${2:-BlackHole 2ch}"
+            local HO="${3:-89}" TS="${4:-Blackhole}"
             local t LINE BX BY R
             if [ "$SECONDS" -gt "$BUDGET_SELECT" ]; then
               echo "select_bh skipped (time budget ${SECONDS}s)"; return 1
+            fi
+            # Idempotent: already on the target -> nothing to do.
+            if axd 4 dump 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
+              echo "dropdown already on $L"; return 0
             fi
             for t in 1 2 3; do
               if [ "$SECONDS" -gt "$BUDGET_SELECT" ]; then
@@ -688,7 +706,7 @@ jobs:
               fi
               open -a "$HOME/HeyClicky.app" 2>/dev/null || true
               sleep 1
-              LINE=$(axd 5 dump 2>/dev/null | grep "AXMenuButton \[on\] 'Apple Virtual Sound Device'" | head -1)
+              LINE=$(axd 5 dump 2>/dev/null | grep "AXMenuButton \[on\] '\(Apple Virtual Sound Device\|BlackHole 2ch\)'" | head -1)
               BX=$(printf '%s' "$LINE" | awk '{gsub(/.*@ /,""); print $1}' | cut -d, -f1)
               BY=$(printf '%s' "$LINE" | awk '{gsub(/.*@ /,""); print $1}' | cut -d, -f2)
               if [ -z "$BX" ]; then
@@ -696,7 +714,7 @@ jobs:
                 cliclick kp:esc || true; sleep 1; continue
               fi
               BX=$((BX + 86)); BY=$((BY + 8))   # 172x16 button -> center
-              echo "bh try $t: dropdown at ${BX},${BY}"
+              echo "bh try $t: dropdown at ${BX},${BY} (target $L)"
               # One attempt per menu-open: open -> act -> CLOSE the menu
               # (esc) -> verify. NEVER AX-query while the menu stays open
               # (354638: menu-open dumps + three verify dumps per try wedged
@@ -705,30 +723,30 @@ jobs:
               cliclick c:$BX,$BY || true        # open the menu
               sleep 1
               screencapture -x "evidence/shots/bh-menu-t${t}.png" 2>/dev/null || true
-              R=$(axd 6 press "blackhole" 2>/dev/null || echo DRIVER-ERROR)
+              R=$(axd 6 press "$Q" 2>/dev/null || echo DRIVER-ERROR)
               echo "bh try $t axpress -> $R"
               cliclick kp:esc || true; sleep 1  # close immediately, then verify
-              if axd 4 dump 2>/dev/null | grep -q "AXMenuButton.*'BlackHole 2ch'"; then
-                echo "dropdown verified: BlackHole 2ch selected (try $t axpress)"; return 0
+              if axd 4 dump 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
+                echo "dropdown verified: $L selected (try $t axpress)"; return 0
               fi
               cliclick c:$BX,$BY || true; sleep 1
-              cliclick m:$BX,$((BY + 89)) || true   # hover 3rd item: BlackHole 2ch
+              cliclick m:$BX,$((BY + HO)) || true   # hover the target item row
               sleep 1
               cliclick kp:return || true            # Return selects highlighted row
               cliclick kp:esc || true; sleep 1      # menu closes itself on select; esc harmless
-              if axd 4 dump 2>/dev/null | grep -q "AXMenuButton.*'BlackHole 2ch'"; then
-                echo "dropdown verified: BlackHole 2ch selected (try $t hover+return)"; return 0
+              if axd 4 dump 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
+                echo "dropdown verified: $L selected (try $t hover+return)"; return 0
               fi
               cliclick c:$BX,$BY || true; sleep 1
-              cliclick t:Blackhole || true          # keyboard type-select fallback
+              cliclick t:$TS || true                # keyboard type-select fallback
               sleep 1
               cliclick kp:return || true
               cliclick kp:esc || true; sleep 1
-              if axd 4 dump 2>/dev/null | grep -q "AXMenuButton.*'BlackHole 2ch'"; then
-                echo "dropdown verified: BlackHole 2ch selected (try $t typeselect)"; return 0
+              if axd 4 dump 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
+                echo "dropdown verified: $L selected (try $t typeselect)"; return 0
               fi
             done
-            echo "WARN: dropdown still not on BlackHole after 3 tries"
+            echo "WARN: dropdown still not on $L after 3 tries"
             return 1
           }
           # Re-assert the audio route BEFORE the selection: a system-default
@@ -751,6 +769,48 @@ jobs:
           # right before the dropdown selection above; do NOT touch it again —
           # a default change after picking the device may reset the card.)
           echo "audio now: $(SwitchAudioSource -c 2>/dev/null || echo unknown)"
+          # ---- Audio path self-test (run 355042: dropdown verified BlackHole
+          # for the whole run, meter never moved once, Continue never enabled —
+          # so WHICH link broke? afplay->default-output? BlackHole loopback? or
+          # the app's capture engine ignoring its own dropdown?) Capture 14s
+          # from each candidate device's INPUT (audio-only, no video device)
+          # while a clip plays, then measure loudness. Silence = that link dead.
+          echo "output dev: $(SwitchAudioSource -t output -c 2>/dev/null || echo ?)"
+          echo "input  dev: $(SwitchAudioSource -t input  -c 2>/dev/null || echo ?)"
+          dev_probe() {  # dev_probe <input-device-name> <outfile> <clip> <resultfile>
+            ffmpeg -hide_banner -loglevel error -f avfoundation -i ":$1" -t 14 -y "$2" 2>>/tmp/probe.err &
+            local PP=$!
+            sleep 2
+            afplay "$3" 2>/dev/null || true
+            sleep 13
+            wait "$PP" 2>/dev/null || true
+            ffmpeg -hide_banner -i "$2" -af volumedetect -f null /dev/null 2>&1 \
+              | grep -o 'mean_volume: [-0-9.]* dB' | tail -1 > "$4" || true
+          }
+          : > /tmp/probe.err
+          echo "BH-INPUT self-test: $(dev_probe 'BlackHole 2ch' /tmp/bh.wav "$HOME/clip.aiff" /tmp/bh-mv.txt)"
+          echo "AVSD-INPUT self-test: $(dev_probe 'Apple Virtual Sound Device' /tmp/avsd.wav "$HOME/name.aiff" /tmp/avsd-mv.txt)"
+          heard() {  # heard <"mean_volume: -27.2 dB"> — true if > -60 dB
+            local n; n=$(printf '%s' "$1" | grep -o '\-[0-9.]*' | head -1)
+            [ -n "$n" ] && awk -v v="$n" 'BEGIN{exit !(v > -60)}'
+          }
+          BHMV=$(cat /tmp/bh-mv.txt 2>/dev/null || echo none)
+          AVSDMV=$(cat /tmp/avsd-mv.txt 2>/dev/null || echo none)
+          BH_HEARD=0; AVSD_HEARD=0
+          heard "$BHMV" && BH_HEARD=1
+          heard "$AVSDMV" && AVSD_HEARD=1
+          echo "BH-HEARD=$BH_HEARD AVSD-HEARD=$AVSD_HEARD (BH=$BHMV / AVSD=$AVSDMV)"
+          if [ "$BH_HEARD" = 1 ]; then
+            echo "BH path confirmed: afplay->BlackHole loopback works (card stays BlackHole)"
+          elif [ "$AVSD_HEARD" = 1 ]; then
+            echo "BlackHole path DEAD but AVSD receives the fed audio — switching output to AVSD and the card dropdown to AVSD"
+            SwitchAudioSource -t output -s "Apple Virtual Sound Device" || true
+            select_bh "virtual sound" "Apple Virtual Sound Device" || true
+            screencapture -x evidence/shots/after-device-avsd.png 2>/dev/null || true
+          else
+            echo "WARN: neither input heard the clip — afplay or the loopback is broken; probe.err:"
+            tail -6 /tmp/probe.err 2>/dev/null || true
+          fi
           echo "feeding the demo clips and driving the demo steps..."
           ( for r in 1 2 3 4 5 6 7 8; do
               for f in clip name draw circle dictate; do
@@ -760,7 +820,7 @@ jobs:
             done ) &
           CLIPS=$!
           advanced=0; idleStreak=0; lastXY=""; sameCount=0
-          bhTries=0; lastBhIter=-100
+          bhTries=0; lastBhIter=-100; toggleTries=0
           for i in $(seq 1 60); do
             if [ "$SECONDS" -gt "$BUDGET_LOOP" ]; then
               echo "TIME BUDGET reached at iter $i — exiting to preserve logs+evidence"
@@ -857,6 +917,30 @@ jobs:
                     select_bh || true
                     echo "demo gesture iter $i: device reselect #$bhTries (${TXT:0:100})"
                   fi ;;
+                *"can i hear you"*|*"bars dance"*)
+                  # Step 1 stalled WITH the dropdown already correct (355042:
+                  # label held BlackHole all run, meter never moved). Two
+                  # countermeasures, both rate-limited:
+                  # (a) speech race every 4th iter — play a clip and press
+                  # Continue DURING it (bars live, transcript mid-flight);
+                  if [ $((i % 4)) -eq 0 ]; then
+                    afplay "$HOME/clip.aiff" 2>/dev/null || true &
+                    AFP=$!
+                    sleep 2
+                    AR2=$(axd 6 press "continue" 2>/dev/null || echo DRIVER-ERROR)
+                    echo "speech-race press during clip -> $AR2"
+                    wait "$AFP" 2>/dev/null || true
+                  fi
+                  # (b) engine toggle every 12th iter, max 2 — select AVSD
+                  # then back to BlackHole, forcing the app's capture engine
+                  # to reopen its input stream twice.
+                  if [ $((i % 12)) -eq 0 ] && [ "$toggleTries" -lt 2 ]; then
+                    toggleTries=$((toggleTries+1))
+                    echo "engine toggle probe #$toggleTries (away then back)"
+                    select_bh "virtual sound" "Apple Virtual Sound Device" 64 Apple || true
+                    sleep 2
+                    select_bh || true
+                  fi ;;
                 *"type"*|*"text field"*)
                   # Typing variant without the double-tap prompt: focus the
                   # field via AX only (no blind click), then type.
@@ -874,7 +958,7 @@ jobs:
               # Visibility for any step no gesture matched: print the card's
               # own text so the next iteration of fixes starts from evidence.
               if [ -n "$TXT" ] && [ $((i % 5)) -eq 0 ]; then
-                echo "demo cardtext iter $i: ${TXT:0:250}"
+                echo "demo cardtext iter $i: ${TXT:0:1200}"
               fi
             fi
             screencapture -x /tmp/cur.png 2>/dev/null || true
@@ -913,6 +997,19 @@ jobs:
                 idleStreak=$((idleStreak+1)) ;;
             esac
             screencapture -x "evidence/shots/demo-$(printf %02d "$i").png" 2>/dev/null || true
+            # Meter movement probe: PSNR between the meter crops of two frames
+            # 4 iters apart. inf = perfectly static (355042: inf the whole run);
+            # a finite low value = the bars moved = the app HEARD something.
+            if [ $((i % 4)) -eq 0 ]; then
+              screencapture -x /tmp/meter_now.png 2>/dev/null || true
+              if [ -f /tmp/meter_prev.png ]; then
+                PS=$(ffmpeg -hide_banner -i /tmp/meter_prev.png -i /tmp/meter_now.png \
+                  -filter_complex "[0:v]crop=234:26:395:345[a];[1:v]crop=234:26:395:345[b];[a][b]psnr" \
+                  -f null /dev/null 2>&1 | grep -Eo 'average:[0-9.]+|average:inf' | head -1)
+                echo "meter Δ iter $i: $PS (inf = static bars, finite = moving)"
+              fi
+              cp /tmp/meter_now.png /tmp/meter_prev.png 2>/dev/null || true
+            fi
             if [ "$advanced" -ge 2 ] && [ "$idleStreak" -ge 12 ]; then
               echo "demo done (quiet) after $i iters (advanced=$advanced)"; break
             fi
@@ -972,6 +1069,23 @@ jobs:
           sleep 5; kill -9 "$AVVID" 2>/dev/null || true
           ls -la evidence/av.mkv 2>/dev/null || echo "no av.mkv (recorder may have failed to open the screen device)"
           echo "--- av.log ---"; tail -5 evidence/av.log 2>/dev/null || true
+          # Audio witness: when did sound actually enter BlackHole?
+          kill "$AVAUD" 2>/dev/null || true
+          kill "$APPLOG" 2>/dev/null || true
+          sleep 1
+          cp /tmp/app-stream.log evidence/app-stream.log 2>/dev/null || true
+          if [ -s evidence/av-audio.m4a ]; then
+            echo "--- BlackHole audio witness: volumedetect ---"
+            ffmpeg -hide_banner -i evidence/av-audio.m4a -af volumedetect -f null /dev/null 2>&1 \
+              | grep -o 'mean_volume: [-0-9.]* dB\|max_volume: [-0-9.]* dB' || true
+            echo "--- BlackHole audio witness: silencedetect (clip slots break the silence) ---"
+            ffmpeg -hide_banner -i evidence/av-audio.m4a -af silencedetect=noise=-45dB:d=4 -f null /dev/null 2>&1 \
+              | grep -Eo 'silence_[A-Za-z_]+: [^ ]*' | head -24 || true
+          else
+            echo "no av-audio.m4a either; audio log tail:"; tail -4 evidence/av-audio.log 2>/dev/null || true
+          fi
+          echo "--- app oslog (audio/device lines) ---"
+          grep -iE 'audio|engine|blackhole|virtual|device|microphone' /tmp/app-stream.log 2>/dev/null | tail -40 || true
           kill "$FULLVID" 2>/dev/null || true
           sleep 1
           NF=$(ls /tmp/frames/f_*.png 2>/dev/null | wc -l | tr -d ' ')
