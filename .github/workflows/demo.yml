@@ -1010,7 +1010,18 @@ jobs:
               fi
               cp /tmp/meter_now.png /tmp/meter_prev.png 2>/dev/null || true
             fi
-            if [ "$advanced" -ge 2 ] && [ "$idleStreak" -ge 12 ]; then
+            # NEVER quit while the card shows the app working: 'speaking…',
+            # 'thinking…', 'listening' etc. mean the demo is ALIVE and mid-
+            # response (355162 quit at step 3 exactly during its draw reply).
+            BUSY=0
+            case "$TXT" in
+              *"speaking"*|*"thinking"*|*"listening"*|*"working"*|*"one moment"*) BUSY=1 ;;
+            esac
+            if [ "$BUSY" = 1 ]; then
+              idleStreak=0
+              echo "demo alive at iter $i (app busy — not quitting)"
+            fi
+            if [ "$BUSY" = 0 ] && [ "$advanced" -ge 2 ] && [ "$idleStreak" -ge 12 ]; then
               echo "demo done (quiet) after $i iters (advanced=$advanced)"; break
             fi
             sleep 4
