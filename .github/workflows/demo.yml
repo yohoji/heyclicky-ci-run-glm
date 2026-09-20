@@ -821,10 +821,41 @@ jobs:
           CLIPS=$!
           advanced=0; idleStreak=0; lastXY=""; sameCount=0
           bhTries=0; lastBhIter=-100; toggleTries=0
+          LASTSTEP=0; gestureFires=0; lastGestureIter=-100
           for i in $(seq 1 60); do
             if [ "$SECONDS" -gt "$BUDGET_LOOP" ]; then
               echo "TIME BUDGET reached at iter $i — exiting to preserve logs+evidence"
               break
+            fi
+            # Read the card's own text ONCE per iteration: the step number and
+            # the app's busy state drive everything below (355226: re-firing
+            # the draw gesture every ~10s kept the app in 'thinking…' forever —
+            # each re-request restarted its response. While it works, LEAVE IT
+            # ALONE: no presses, no gestures, no clips.)
+            TXT=$(axd 6 cardtext 2>/dev/null || echo "")
+            BUSY=0
+            case "$TXT" in
+              *"speaking"*|*"thinking"*|*"listening"*|*"working"*|*"one moment"*) BUSY=1 ;;
+            esac
+            STEPNO=$(printf '%s' "$TXT" | grep -E -o 'step [0-9] of 8' | head -1 | grep -E -o '[0-9]' | head -1)
+            case "$STEPNO" in ''|*[!0-9]*) STEPNO=0 ;; esac
+            if [ "$STEPNO" != "$LASTSTEP" ]; then
+              echo "demo: now on step $STEPNO"
+              LASTSTEP=$STEPNO; gestureFires=0; lastGestureIter=-100
+              # The round-robin feeder exists for step 1's passive mic test;
+              # after that the gesture blocks play their own clips on demand
+              # and the feeder only spams the app's mic mid-response.
+              if [ "$STEPNO" -ge 2 ]; then
+                kill "$CLIPS" 2>/dev/null || true
+                echo "feeder stopped (gesture blocks play their own clips)"
+              fi
+            fi
+            if [ "$BUSY" = 1 ]; then
+              idleStreak=0
+              echo "demo alive at iter $i (app busy — leaving it alone)"
+              screencapture -x "evidence/shots/demo-$(printf %02d "$i").png" 2>/dev/null || true
+              sleep 4
+              continue
             fi
             # AX-first: press the demo card's next-step button by tree.
             # AXEnabled guarantees we never click a dim Continue; the pixel
@@ -852,11 +883,10 @@ jobs:
             # and the AX tree exposes it (run 35197512116 stalled on step 2/8
             # "This is how you talk to me": it wants Ctrl+Option HELD while the
             # name is said — the app only listens during the hold, so clips
-            # alone never enable Continue). Gesture only while stuck (the AX
-            # press just refused a disabled Continue) and only for the first
-            # 40 idle iters of a step.
-            if [ -x /tmp/ax_driver ] && [ "$idleStreak" -lt 40 ]; then
-              TXT=$(axd 6 cardtext 2>/dev/null || echo "")
+            # alone never enable Continue). Speech gestures are capped per
+            # step (max 4 fires, ≥4 iters apart) — one clean request, then
+            # quiet for the app to act (355226 lesson).
+            if [ -x /tmp/ax_driver ]; then
               # Gesture per step, keyed on the card's OWN instruction text (the
               # 8-step script lives in the binary strings; steps 2/3/4/7 need
               # the Ctrl(=cliclick "alt")+Option combo HELD — the app only
@@ -864,48 +894,60 @@ jobs:
               case "$TXT" in
                 *"circle"*)
                   # step 4 "Circle anything": hold + circle with the cursor + ask
-                  ( afplay "$HOME/circle.aiff" 2>/dev/null || true ) &
-                  cliclick kd:ctrl,alt || true
-                  sleep 2
-                  cliclick dd:512,305 w:50 dm:572,330 dm:597,390 dm:572,450 dm:512,475 dm:452,450 dm:427,390 dm:452,330 dm:512,305 du: || true
-                  sleep 3
-                  cliclick ku:ctrl,alt || true
-                  echo "demo gesture iter $i: hold+circle+ask (${TXT:0:100})" ;;
+                  if [ "$gestureFires" -lt 4 ] && [ $((i - lastGestureIter)) -ge 4 ]; then
+                    gestureFires=$((gestureFires+1)); lastGestureIter=$i
+                    ( afplay "$HOME/circle.aiff" 2>/dev/null || true ) &
+                    cliclick kd:ctrl,alt || true
+                    sleep 2
+                    cliclick dd:512,305 w:50 dm:572,330 dm:597,390 dm:572,450 dm:512,475 dm:452,450 dm:427,390 dm:452,330 dm:512,305 du: || true
+                    sleep 3
+                    cliclick ku:ctrl,alt || true
+                    echo "demo gesture iter $i: hold+circle+ask (${TXT:0:100})"
+                  fi ;;
                 *"draw"*)
                   # step 3 "I can draw": hold + ASK it to draw (the app draws)
-                  ( afplay "$HOME/draw.aiff" 2>/dev/null || true ) &
-                  cliclick kd:ctrl,alt || true
-                  sleep 8
-                  cliclick ku:ctrl,alt || true
-                  echo "demo gesture iter $i: hold+ask-to-draw (${TXT:0:100})" ;;
+                  if [ "$gestureFires" -lt 4 ] && [ $((i - lastGestureIter)) -ge 4 ]; then
+                    gestureFires=$((gestureFires+1)); lastGestureIter=$i
+                    ( afplay "$HOME/draw.aiff" 2>/dev/null || true ) &
+                    cliclick kd:ctrl,alt || true
+                    sleep 8
+                    cliclick ku:ctrl,alt || true
+                    echo "demo gesture iter $i: hold+ask-to-draw (${TXT:0:100})"
+                  fi ;;
                 *"double-tap"*|*"not in the mood"*|*"words land here"*)
                   # step 5 "Not in the mood to talk? Type": double-tap Control,
                   # then type into the composer. No blind click — the box
                   # auto-focuses and the backdrop is the Gmail page (a stray
-                  # click could hit a link).
-                  cliclick ku:cmd,ctrl,alt,shift,fn || true
-                  sleep 1
-                  cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
-                  sleep 2
-                  FXY=$(axd 6 find "words land here" 2>/dev/null || echo "")
-                  case "$FXY" in
-                    *,*) ;;
-                    *) FXY=$(axd 6 find "field" 2>/dev/null || echo "") ;;
-                  esac
-                  case "$FXY" in
-                    *,*) cliclick c:${FXY%,*},${FXY#*,} || true; sleep 1 ;;
-                  esac
-                  cliclick t:'Hey Claude, make me a billion-dollar app, make no mistakes' || true
-                  echo "demo gesture iter $i: double-tap+type (${TXT:0:100})" ;;
+                  # click could hit a link). Cap 2: re-typing appends copies.
+                  if [ "$gestureFires" -lt 2 ] && [ $((i - lastGestureIter)) -ge 4 ]; then
+                    gestureFires=$((gestureFires+1)); lastGestureIter=$i
+                    cliclick ku:cmd,ctrl,alt,shift,fn || true
+                    sleep 1
+                    cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
+                    sleep 2
+                    FXY=$(axd 6 find "words land here" 2>/dev/null || echo "")
+                    case "$FXY" in
+                      *,*) ;;
+                      *) FXY=$(axd 6 find "field" 2>/dev/null || echo "") ;;
+                    esac
+                    case "$FXY" in
+                      *,*) cliclick c:${FXY%,*},${FXY#*,} || true; sleep 1 ;;
+                    esac
+                    cliclick t:'Hey Claude, make me a billion-dollar app, make no mistakes' || true
+                    echo "demo gesture iter $i: double-tap+type (${TXT:0:100})"
+                  fi ;;
                 *"hold the keys"*|*"hold control"*|*"dictat"*)
                   # steps 2 + 7: hold and say the name / dictate word-for-word
-                  CLIP="$HOME/name.aiff"
-                  case "$TXT" in *"dictat"*) CLIP="$HOME/dictate.aiff" ;; esac
-                  ( afplay "$CLIP" 2>/dev/null || true ) &
-                  cliclick kd:ctrl,alt || true
-                  sleep 8
-                  cliclick ku:ctrl,alt || true
-                  echo "demo gesture iter $i: hold-to-talk (${TXT:0:100})" ;;
+                  if [ "$gestureFires" -lt 4 ] && [ $((i - lastGestureIter)) -ge 4 ]; then
+                    gestureFires=$((gestureFires+1)); lastGestureIter=$i
+                    CLIP="$HOME/name.aiff"
+                    case "$TXT" in *"dictat"*) CLIP="$HOME/dictate.aiff" ;; esac
+                    ( afplay "$CLIP" 2>/dev/null || true ) &
+                    cliclick kd:ctrl,alt || true
+                    sleep 8
+                    cliclick ku:ctrl,alt || true
+                    echo "demo gesture iter $i: hold-to-talk (${TXT:0:100})"
+                  fi ;;
                 *"apple virtual sound device"*|*"null audio device"*)
                   # The demo card's mic dropdown is NOT on BlackHole (it caches
                   # the launch-time system default = AVSD, which never receives
@@ -943,17 +985,20 @@ jobs:
                   fi ;;
                 *"type"*|*"text field"*)
                   # Typing variant without the double-tap prompt: focus the
-                  # field via AX only (no blind click), then type.
-                  FXY=$(axd 6 find "words land here" 2>/dev/null || echo "")
-                  case "$FXY" in
-                    *,*) ;;
-                    *) FXY=$(axd 6 find "field" 2>/dev/null || echo "") ;;
-                  esac
-                  case "$FXY" in
-                    *,*) cliclick c:${FXY%,*},${FXY#*,} || true; sleep 1 ;;
-                  esac
-                  cliclick t:'Hey Claude, make me a billion-dollar app, make no mistakes' || true
-                  echo "demo gesture iter $i: typed into field (${TXT:0:100})" ;;
+                  # field via AX only (no blind click), then type. Cap 2.
+                  if [ "$gestureFires" -lt 2 ] && [ $((i - lastGestureIter)) -ge 4 ]; then
+                    gestureFires=$((gestureFires+1)); lastGestureIter=$i
+                    FXY=$(axd 6 find "words land here" 2>/dev/null || echo "")
+                    case "$FXY" in
+                      *,*) ;;
+                      *) FXY=$(axd 6 find "field" 2>/dev/null || echo "") ;;
+                    esac
+                    case "$FXY" in
+                      *,*) cliclick c:${FXY%,*},${FXY#*,} || true; sleep 1 ;;
+                    esac
+                    cliclick t:'Hey Claude, make me a billion-dollar app, make no mistakes' || true
+                    echo "demo gesture iter $i: typed into field (${TXT:0:100})"
+                  fi ;;
               esac
               # Visibility for any step no gesture matched: print the card's
               # own text so the next iteration of fixes starts from evidence.
@@ -1010,17 +1055,8 @@ jobs:
               fi
               cp /tmp/meter_now.png /tmp/meter_prev.png 2>/dev/null || true
             fi
-            # NEVER quit while the card shows the app working: 'speaking…',
-            # 'thinking…', 'listening' etc. mean the demo is ALIVE and mid-
-            # response (355162 quit at step 3 exactly during its draw reply).
-            BUSY=0
-            case "$TXT" in
-              *"speaking"*|*"thinking"*|*"listening"*|*"working"*|*"one moment"*) BUSY=1 ;;
-            esac
-            if [ "$BUSY" = 1 ]; then
-              idleStreak=0
-              echo "demo alive at iter $i (app busy — not quitting)"
-            fi
+            # Quiet-exit: only when the card is NOT busy (busy iters continue
+            # at the top of the loop) and we have advanced at least twice.
             if [ "$BUSY" = 0 ] && [ "$advanced" -ge 2 ] && [ "$idleStreak" -ge 12 ]; then
               echo "demo done (quiet) after $i iters (advanced=$advanced)"; break
             fi
