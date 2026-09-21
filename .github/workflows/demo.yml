@@ -841,8 +841,13 @@ jobs:
             # ALONE: no presses, no gestures, no clips.)
             TXT=$(axd 6 cardtext 2>/dev/null || echo "")
             BUSY=0
+            # Match ONLY the app's status lines — they always end with the …
+            # glyph ("speaking…", "thinking…"). Bare-word matching poisons
+            # itself on static card instructions: step 2 says "i'm listening
+            # the whole time you hold them", which read as busy for all 59
+            # remaining iters of run 355862 (advanced=1, zero gestures).
             case "$TXT" in
-              *"speaking"*|*"thinking"*|*"listening"*|*"working"*|*"one moment"*) BUSY=1 ;;
+              *"speaking…"*|*"thinking…"*|*"listening…"*|*"working…"*|*"one moment…"*) BUSY=1 ;;
             esac
             STEPNO=$(printf '%s' "$TXT" | grep -E -o 'step [0-9] of 8' | head -1 | grep -E -o '[0-9]' | head -1)
             case "$STEPNO" in ''|*[!0-9]*) STEPNO=0 ;; esac
