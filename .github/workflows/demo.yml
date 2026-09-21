@@ -671,8 +671,8 @@ jobs:
           # 35370062166, 35463896676...). The step must ALWAYS finish on its
           # own so the Logs + Upload steps run. $SECONDS counts from this
           # shell's start (= step start).
-          BUDGET_SELECT=1800   # no new select_bh menu work after 30:00
-          BUDGET_LOOP=2040     # demo loop must exit by 34:00 absolute
+          BUDGET_SELECT=1200   # no new select_bh menu work after 20:00
+          BUDGET_LOOP=1800     # demo loop must exit by 30:00 absolute (tail needs ~8min)
           axd() {  # axd <secs> <ax_driver args...>: bounded AX call
             local secs=$1; shift
             rm -f /tmp/axd.out /tmp/axd.done
@@ -706,7 +706,9 @@ jobs:
               fi
               open -a "$HOME/HeyClicky.app" 2>/dev/null || true
               sleep 1
-              LINE=$(axd 5 dump 2>/dev/null | grep "AXMenuButton \[on\] '\(Apple Virtual Sound Device\|BlackHole 2ch\)'" | head -1)
+              # POSIX ERE (-E): the old BRE \| alternation is GNU-only — BSD
+              # grep treats it literally, so the locate never matched.
+              LINE=$(axd 5 dump 2>/dev/null | grep -E "AXMenuButton \[on\] '(Apple Virtual Sound Device|BlackHole 2ch)'" | head -1)
               BX=$(printf '%s' "$LINE" | awk '{gsub(/.*@ /,""); print $1}' | cut -d, -f1)
               BY=$(printf '%s' "$LINE" | awk '{gsub(/.*@ /,""); print $1}' | cut -d, -f2)
               if [ -z "$BX" ]; then
@@ -778,7 +780,11 @@ jobs:
           echo "output dev: $(SwitchAudioSource -t output -c 2>/dev/null || echo ?)"
           echo "input  dev: $(SwitchAudioSource -t input  -c 2>/dev/null || echo ?)"
           dev_probe() {  # dev_probe <input-device-name> <outfile> <clip> <resultfile>
-            ffmpeg -hide_banner -loglevel error -f avfoundation -i ":$1" -t 14 -y "$2" 2>>/tmp/probe.err &
+            # run_to bounds the capture: an avfoundation device-open that never
+            # delivers a first buffer blocks ffmpeg FOREVER (-t only counts once
+            # frames flow) and dev_probe waits synchronously — that hang froze
+            # the step in run 355365 (fifth 50-min cap-kill, zero evidence).
+            run_to 45 ffmpeg -hide_banner -loglevel error -f avfoundation -i ":$1" -t 14 -y "$2" 2>>/tmp/probe.err &
             local PP=$!
             sleep 2
             afplay "$3" 2>/dev/null || true
@@ -800,6 +806,7 @@ jobs:
           heard "$BHMV" && BH_HEARD=1
           heard "$AVSDMV" && AVSD_HEARD=1
           echo "BH-HEARD=$BH_HEARD AVSD-HEARD=$AVSD_HEARD (BH=$BHMV / AVSD=$AVSDMV)"
+          echo "T+${SECONDS}s: audio self-test done (BH=$BH_HEARD AVSD=$AVSD_HEARD)"
           if [ "$BH_HEARD" = 1 ]; then
             echo "BH path confirmed: afplay->BlackHole loopback works (card stays BlackHole)"
           elif [ "$AVSD_HEARD" = 1 ]; then
@@ -1045,7 +1052,8 @@ jobs:
             # Meter movement probe: PSNR between the meter crops of two frames
             # 4 iters apart. inf = perfectly static (355042: inf the whole run);
             # a finite low value = the bars moved = the app HEARD something.
-            if [ $((i % 4)) -eq 0 ]; then
+            # Skipped while the app is busy — busy iters must stay cheap.
+            if [ $((i % 4)) -eq 0 ] && [ "$BUSY" = 0 ]; then
               screencapture -x /tmp/meter_now.png 2>/dev/null || true
               if [ -f /tmp/meter_prev.png ]; then
                 PS=$(ffmpeg -hide_banner -i /tmp/meter_prev.png -i /tmp/meter_now.png \
@@ -1063,10 +1071,11 @@ jobs:
             sleep 4
           done
           kill "$CLIPS" 2>/dev/null || true
+          echo "T+${SECONDS}s: demo loop exited (advanced=$advanced, last iter $i)"
           # The text toggle is ignored while the app is speaking, so let the
           # walkthrough voice finish before trying it.
-          echo "letting the demo voice finish..."
-          sleep 60
+          echo "letting the demo voice finish... (T+${SECONDS}s)"
+          if [ "$SECONDS" -lt 2160 ]; then sleep 60; else echo "skipping voice-settle wait (late)"; fi
           /tmp/ax_driver dump > evidence/ax-final-tree.log 2>/dev/null || true
           # ---- TEXT interaction: double-tap Control to type instead of talk ----
           # The app is live and quiet (the demo voice was waited out above).
@@ -1077,6 +1086,9 @@ jobs:
           # modifiers first (0.4s hold max, 0.5s between taps, Control-only).
           # Last guard: the tutorial/demo card must be gone before the text
           # toggle can work; if it is still up, keep dismissing it.
+          if [ "$SECONDS" -gt 2520 ]; then
+            echo "skipping text phase (late, T+${SECONDS}s) — protecting the stitch+upload window"
+          else
           for try in 1 2 3 4; do
             screencapture -x /tmp/sm.png 2>/dev/null || true
             SXY=$(/tmp/find_target /tmp/sm.png showme 2>/dev/null || echo NONE)
@@ -1109,6 +1121,7 @@ jobs:
             screencapture -x "evidence/shots/text-resp-${t}.png" 2>/dev/null || true
             sleep 5
           done
+          fi   # end of text-phase time guard
           # Stop the frame-burst recorder, then stitch the frames into an mp4.
           # framerate 3 keeps it watchable.
           # Stop the ffmpeg av recorder with SIGINT so it writes a valid mp4.
@@ -1121,7 +1134,9 @@ jobs:
           kill "$APPLOG" 2>/dev/null || true
           sleep 1
           cp /tmp/app-stream.log evidence/app-stream.log 2>/dev/null || true
-          if [ -s evidence/av-audio.m4a ]; then
+          if [ "$SECONDS" -gt 2560 ]; then
+            echo "skipping audio-witness analysis (late, T+${SECONDS}s) — the m4a still uploads for offline analysis"
+          elif [ -s evidence/av-audio.m4a ]; then
             echo "--- BlackHole audio witness: volumedetect ---"
             ffmpeg -hide_banner -i evidence/av-audio.m4a -af volumedetect -f null /dev/null 2>&1 \
               | grep -o 'mean_volume: [-0-9.]* dB\|max_volume: [-0-9.]* dB' || true
@@ -1156,3 +1171,48 @@ jobs:
           path: evidence/**
           if-no-files-found: warn
 # registration nudge: workflow file touched after enabling Actions on this copy
+
+  # ---- cap-kill insurance -----------------------------------------------------
+  # When interact hits its 50-min timeout GitHub discards its logs and artifacts
+  # outright (five runs lost this way). This job runs BESIDE it (no needs: →
+  # both start together) on a cheap ubuntu runner and snapshots the interact
+  # job's live log + per-step status every minute, then uploads whatever it saw
+  # — so even a cancelled run yields the timeline.
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - name: Snapshot the interact job while it runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -u
+          mkdir -p partial
+          for n in $(seq 1 58); do
+            JROW=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" 2>/dev/null \
+              | jq -r '.jobs[] | select(.name == "interact") | "\(.id) \(.status) \(.conclusion // "-")"' \
+              | head -1) || true
+            JID=${JROW%% *}; JST=$(printf '%s' "$JROW" | cut -d' ' -f2)
+            if [ -n "$JID" ]; then
+              gh api "repos/$REPO/actions/jobs/$JID/logs" > partial/interact-log.txt 2>/dev/null || true
+              gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" 2>/dev/null \
+                | jq -r '.jobs[] | select(.name == "interact") | .steps[] | "\(.conclusion // .status)\t\(.started_at // "-")\t\(.name)"' \
+                > partial/steps.txt || true
+              echo "snapshot $n: job=$JID status=$JST logbytes=$(wc -c < partial/interact-log.txt 2>/dev/null || echo 0)" >> partial/progress.txt
+              case "$JST" in completed*) echo "interact completed; final snapshot taken"; break ;; esac
+            else
+              echo "snapshot $n: interact job not visible yet" >> partial/progress.txt
+            fi
+            sleep 60
+          done
+          echo "--- last steps snapshot ---"
+          cat partial/steps.txt 2>/dev/null || true
+      - name: Upload watchdog snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: watchdog-partial-logs
+          path: partial/
+          if-no-files-found: ignore
