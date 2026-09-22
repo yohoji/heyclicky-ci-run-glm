@@ -308,6 +308,28 @@ jobs:
             return AXIsProcessTrustedWithOptions([k: false] as CFDictionary)
           }
           if mode == "trusted" { print(trustedNow() ? "YES" : "NO"); exit(0) }
+          if mode == "dtap" {
+            // Double-tap the Control key exactly the way the app's
+            // ModifierDoubleTapDetector sees a physical press: typed
+            // kCGEventFlagsChanged events carrying the control mask
+            // (keycode 59), empty->ctrl->empty twice, press-to-press
+            // 0.21s — inside the detector's 0.4s/0.5s windows (from
+            // FUN_100a56de4 in doubles.c). cliclick kd/ku alone never
+            // registered (357421).
+            func tap(_ down: Bool) {
+              if let e = CGEvent(keyboardEventSource: nil, virtualKey: 59, keyDown: down) {
+                e.type = .flagsChanged
+                e.flags = down ? CGEventFlags.maskControl : []
+                e.post(tap: .cghidEventTap)
+              }
+            }
+            tap(true); usleep(90_000)
+            tap(false); usleep(120_000)
+            tap(true); usleep(90_000)
+            tap(false)
+            print("DTAP-SENT")
+            exit(0)
+          }
 
           let apps = NSRunningApplication.runningApplications(
             withBundleIdentifier: "com.humansongs.clicky")
@@ -382,14 +404,15 @@ jobs:
             }
             if !query.isEmpty,
                role == "AXButton" || role == "AXLink" || role == "AXMenuItem"
-               || role == "AXTextField" {
+               || role == "AXTextField" || role == "AXTextArea" {
               if label.lowercased().contains(query) {
                 hits.append(Hit(el: el, role: role, label: label,
                                 pos: pos, size: size, enabled: enabled))
               }
             }
             if mode == "cardtext", !label.isEmpty, pos.y >= 31, size.height > 0,
-               role == "AXStaticText" || role == "AXButton" || role == "AXMenuButton" || role == "AXTextField" {
+               role == "AXStaticText" || role == "AXButton" || role == "AXMenuButton"
+               || role == "AXTextField" || role == "AXTextArea" {
               texts.append(label.lowercased())
             }
             for c in axChildren(el) { walk(c, depth + 1) }
@@ -407,7 +430,9 @@ jobs:
             // field whose placeholder contains e.g. "start" would be clicked
             // and counted as an advance, bypassing the step's gesture);
             // find stays field-inclusive so gestures can locate composers.
-            let cands = mode == "press" ? hits.filter { $0.role != "AXTextField" } : hits
+            let cands = mode == "press"
+              ? hits.filter { $0.role != "AXTextField" && $0.role != "AXTextArea" }
+              : hits
             guard let b = (cands.filter { $0.enabled }.first ?? cands.first) else {
               print("NOTFOUND trusted=\(trustedNow()) scanned=\(visited)"); exit(0)
             }
@@ -496,6 +521,9 @@ jobs:
               sudo sqlite3 "$SYS" \
                 "INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,flags) VALUES ('kTCCServiceAccessibility','/usr/bin/osascript',1,2,4,1,X'$AXOSA',0);" \
                 && echo "osascript Accessibility row OK"
+              sudo sqlite3 "$SYS" \
+                "INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,indirect_object_identifier,flags) VALUES ('kTCCServiceAppleEvents','/usr/bin/osascript',1,2,4,1,X'$AXOSA','com.apple.systemevents',0);" \
+                && echo "osascript Apple Events row OK"
             fi
             sudo killall tccd 2>/dev/null || true
             sleep 2
@@ -966,14 +994,21 @@ jobs:
                     echo "demo gesture iter $i: hold+ask-to-draw (${TXT:0:100})"
                   fi ;;
                 *"double-tap"*|*"not in the mood"*|*"words land here"*)
-                  # step 5 "Not in the mood to talk? Type": double-tap Control,
-                  # then type into the composer. No blind click — the box
-                  # auto-focuses and the backdrop is the Gmail page (a stray
-                  # click could hit a link). Cap 2: re-typing appends copies.
-                  if [ "$gestureFires" -lt 2 ] && [ $((i - lastGestureIter)) -ge 4 ]; then
+                  # step 5 "Not in the mood to talk? Type": the app gates
+                  # Continue behind a real double-tap of the Control key.
+                  # cliclick kd/ku pairs alone never registered (357421),
+                  # so each attempt fires three delivery mechanisms:
+                  # CGEvent dtap (HID tap), osascript System Events key
+                  # code, and the cliclick pair. If a composer field then
+                  # appears we click + type into it; if the double-tap
+                  # opened a voice-chat instead, a clip plays so the app
+                  # hears us either way.
+                  if [ "$gestureFires" -lt 4 ] && [ $((i - lastGestureIter)) -ge 4 ]; then
                     gestureFires=$((gestureFires+1)); lastGestureIter=$i
                     cliclick ku:cmd,ctrl,alt,shift,fn || true
                     sleep 1
+                    /tmp/ax_driver dtap || true
+                    run_to 10 osascript -e 'tell application "System Events" to key code 59' -e 'delay 0.15' -e 'tell application "System Events" to key code 59' >/dev/null 2>&1 || true
                     cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
                     sleep 2
                     FXY=$(axd 6 find "words land here" 2>/dev/null || echo "")
@@ -985,6 +1020,18 @@ jobs:
                       *,*) cliclick c:${FXY%,*},${FXY#*,} || true; sleep 1 ;;
                     esac
                     cliclick t:'Hey Claude, make me a billion-dollar app, make no mistakes' || true
+                    # Return ONLY when a composer is provably present (AX
+                    # field hit, or the card grew new elements after the
+                    # double-tap). A blind Return could land on a focused
+                    # Skip button and skip the demo.
+                    case "$FXY" in
+                      *,*) cliclick kp:return || true ;;
+                      *) TXT2=$(axd 6 cardtext 2>/dev/null || echo "")
+                         if [ -n "$TXT2" ] && [ "$TXT2" != "$TXT" ]; then
+                           cliclick kp:return || true
+                           ( afplay "$HOME/clip.aiff" 2>/dev/null || true ) &
+                         fi ;;
+                    esac
                     echo "demo gesture iter $i: double-tap+type (${TXT:0:100})"
                   fi ;;
                 *"hold the keys"*|*"hold control"*|*"dictat"*)
@@ -1109,7 +1156,10 @@ jobs:
             fi
             # Quiet-exit: only when the card is NOT busy (busy iters continue
             # at the top of the loop) and we have advanced at least twice.
-            if [ "$BUSY" = 0 ] && [ "$advanced" -ge 2 ] && [ "$idleStreak" -ge 12 ]; then
+            # 20 idle iters (~3.5 min) so a slow gesture (double-tap) gets
+            # all 4 capped fires before the loop gives up; the loop's own
+            # BUDGET_LOOP bound still caps the total.
+            if [ "$BUSY" = 0 ] && [ "$advanced" -ge 2 ] && [ "$idleStreak" -ge 20 ]; then
               echo "demo done (quiet) after $i iters (advanced=$advanced)"; break
             fi
             sleep 4
@@ -1145,6 +1195,8 @@ jobs:
           echo "clean control double-tap to toggle text input"
           cliclick ku:cmd,ctrl,alt,shift,fn || true
           sleep 1
+          /tmp/ax_driver dtap || true
+          run_to 10 osascript -e 'tell application "System Events" to key code 59' -e 'delay 0.15' -e 'tell application "System Events" to key code 59' >/dev/null 2>&1 || true
           cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
           sleep 2
           shot evidence/shots/text-00-dictation.png 2>/dev/null || true
@@ -1153,6 +1205,7 @@ jobs:
           sleep 1
           cliclick ku:cmd,ctrl,alt,shift,fn || true
           sleep 1
+          /tmp/ax_driver dtap || true
           cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
           sleep 3
           shot evidence/shots/text-01-open.png 2>/dev/null || true
