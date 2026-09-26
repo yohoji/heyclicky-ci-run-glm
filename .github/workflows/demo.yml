@@ -20,6 +20,10 @@ on:
 permissions:
   actions: read
   checks: write
+  contents: write   # progress-branch pusher: the only live channel left (the
+                    # check-run heartbeat PATCH is now blocked by GitHub for
+                    # GITHUB_TOKEN, and cancelled jobs' logs+artifacts are
+                    # discarded outright — cap-kill #6, run 36264307950).
 
 jobs:
   interact:
@@ -97,26 +101,52 @@ jobs:
           # min with identical prelude code to the healthy run before it —
           # environmental, and the logs API never serves partial logs).
           TO=$(command -v gtimeout || command -v timeout || true)
-          run_to() { if [ -n "$TO" ]; then "$TO" "$@"; else shift; "$@"; fi; }
+          # -k 10: a process that ignores TERM (wedged CoreAudio/WindowServer
+          # call) still dies 10s later via SIGKILL — plain gtimeout hung run
+          # 36264307950 to the 50-min cap with zero evidence.
+          run_to() { if [ -n "$TO" ]; then "$TO" -k 10 "$@"; else shift; "$@"; fi; }
           shot()   { run_to 8 screencapture -x "$1" 2>/dev/null || true; }
           sa()     { run_to 10 SwitchAudioSource "$@" || true; }
           lsafe()  { run_to 25 log show "$@"; }
-          # Heartbeat: PATCH the job's check-run title so progress survives a
-          # cap-kill and is pollable live (check-runs persist after cancel;
-          # the job-logs API never serves partial logs for running jobs).
-          CHECKRUN=""
+          # ---- progress branch: the live channel --------------------------------
+          # hb used to PATCH this job's check-run title, but GitHub now blocks
+          # check-run mutation via GITHUB_TOKEN (annotations prove it — run
+          # 36264307950 got zero heartbeats out). Push to a `progress` branch
+          # instead: raw.githubusercontent.com serves it while the run is live,
+          # and the branch survives any cancel. Pushes run in the background so
+          # they never stall the loop.
+          if [ ! -d /tmp/prog/.git ]; then
+            mkdir -p /tmp/prog/shots
+            git -C /tmp/prog init -q
+            git -C /tmp/prog config user.email runner@ci.local
+            git -C /tmp/prog config user.name ci-runner
+            git -C /tmp/prog remote add origin "https://x-access-token:${GH_TOKEN}@github.com/$GITHUB_REPOSITORY.git"
+            echo "# demo progress — run $GITHUB_RUN_ID" > /tmp/prog/progress.txt
+          fi
+          push_prog() {
+            rm -rf /tmp/prog/shots; mkdir -p /tmp/prog/shots
+            ls -t evidence/shots/*.png 2>/dev/null | head -4 | while IFS= read -r f; do cp -f "$f" /tmp/prog/shots/ 2>/dev/null || true; done
+            cp -f evidence/*.log /tmp/prog/ 2>/dev/null || true
+            git -C /tmp/prog add -A >/dev/null 2>&1 || true
+            git -C /tmp/prog commit -q -m "T+${SECONDS}s" >/dev/null 2>&1 || true
+            run_to 45 git -C /tmp/prog push -q -f origin HEAD:progress >/dev/null 2>&1 || true
+          }
           hb() {
             echo "T+${SECONDS}s: $*"
-            if [ -z "$CHECKRUN" ] && [ -s /tmp/checkrun.id ]; then CHECKRUN=$(cat /tmp/checkrun.id); fi
-            if [ -n "$CHECKRUN" ]; then
-              run_to 10 gh api "repos/$GITHUB_REPOSITORY/check-runs/$CHECKRUN" -X PATCH \
-                -f name=interact -f status=in_progress \
-                -f "output[summary]=progress" -f "output[title]=T+${SECONDS}s: $*" \
-                >/dev/null 2>&1 || true
-            fi
+            echo "$(date -u +%H:%M:%SZ) T+${SECONDS}s: $*" >> /tmp/prog/progress.txt
+            push_prog &
           }
-          ( JID=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs" 2>/dev/null | jq -r '.jobs[] | select(.name == "interact") | .id' 2>/dev/null | head -1 || true); \
-            if [ -n "$JID" ]; then CR=$(gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$JID" 2>/dev/null | jq -r '.check_run_url' 2>/dev/null | awk -F/ '{print $NF}'); printf '%s' "$CR" > /tmp/checkrun.id 2>/dev/null || true; fi ) >/dev/null 2>&1 &
+          # ---- reaper -------------------------------------------------------------
+          # Last-resort insurance: whatever wedges despite the bounds above, the
+          # step shell dies at T+2700s so the Logs/Upload steps (if: always())
+          # always run and the evidence always uploads (cancelled jobs lose
+          # everything — five runs lost this way).
+          ( sleep 2700
+            echo "$(date -u +%H:%M:%SZ) REAPER: killing wedged step at T+${SECONDS}s" >> /tmp/prog/progress.txt 2>/dev/null || true
+            git -C /tmp/prog add -A >/dev/null 2>&1 || true
+            git -C /tmp/prog commit -q -m "reaper" >/dev/null 2>&1 || true
+            run_to 45 git -C /tmp/prog push -q -f origin HEAD:progress >/dev/null 2>&1 || true
+            kill -9 $$ ) >/dev/null 2>&1 &
           hb "launch step started"
           mkdir -p evidence/shots
           # Vision helper (Swift, so no pip — macOS runners use an externally
@@ -527,7 +557,7 @@ jobs:
             fi
             sudo killall tccd 2>/dev/null || true
             sleep 2
-            echo "AX trusted: $(/tmp/ax_driver trusted 2>/dev/null || echo no-driver)"
+            echo "AX trusted: $(run_to 20 /tmp/ax_driver trusted 2>/dev/null || echo no-driver)"
           else
             cat /tmp/axc.log || true
             echo "AX driver build FAILED; pixel fallback only"
@@ -608,7 +638,7 @@ jobs:
           hb "auth done (AUTHED=$AUTHED)"
           sleep 12   # let the post-sign-in survey render and settle
           shot evidence/shots/00-start.png 2>/dev/null || true
-          /tmp/ax_driver dump > evidence/ax-early-tree.log 2>/dev/null || true
+          run_to 30 /tmp/ax_driver dump > evidence/ax-early-tree.log 2>/dev/null || true
           # ---- STATE-AWARE onboarding driver ------------------------------
           # Instead of a rigid step sequence (which desynced when a screen — e.g.
           # the mic prompt — appeared late and got skipped, leaving it unclicked),
@@ -626,7 +656,7 @@ jobs:
           lastXY=""
           for i in $(seq 1 60); do
             shot /tmp/cur.png 2>/dev/null || true
-            R=$(/tmp/find_target /tmp/cur.png classify 2>/dev/null || echo none)
+            R=$(run_to 20 /tmp/find_target /tmp/cur.png classify 2>/dev/null || echo none)
             MODE="${R%% *}"; XY="${R#* }"
             echo "onboard iter $i: $R"
             done_onboard=0
@@ -693,13 +723,13 @@ jobs:
           if [ -x /tmp/ax_driver ]; then
             for try in 1 2 3 4 5 6; do
               sleep 4
-              R=$(/tmp/ax_driver press "show me" 2>/dev/null || echo DRIVER-ERROR)
+              R=$(run_to 20 /tmp/ax_driver press "show me" 2>/dev/null || echo DRIVER-ERROR)
               echo "ax showme try $try -> $R"
               case "$R" in
                 PRESSED*|CLICKED*) ax_ok=1; break ;;
                 NOTFOUND*|EMPTY-TREE*|NOPID*)
                   # Tree can't see the card — keep the dump as evidence.
-                  /tmp/ax_driver dump > evidence/ax-tree-at-showme.log 2>/dev/null || true
+                  run_to 30 /tmp/ax_driver dump > evidence/ax-tree-at-showme.log 2>/dev/null || true
                   break ;;
                 *PRESS-FAILED*|DRIVER-ERROR*) ;;   # found but disabled / transient — retry
               esac
@@ -709,7 +739,7 @@ jobs:
             for try in 1 2 3 4 5 6; do
               sleep 4
               shot /tmp/sm.png 2>/dev/null || true
-              SXY=$(/tmp/find_target /tmp/sm.png showme 2>/dev/null || echo NONE)
+              SXY=$(run_to 20 /tmp/find_target /tmp/sm.png showme 2>/dev/null || echo NONE)
               echo "showme try $try -> $SXY"
               [ "$SXY" = "NONE" ] && break
               cliclick c:${SXY%,*},${SXY#*,} || true
@@ -917,7 +947,7 @@ jobs:
             esac
             STEPNO=$(printf '%s' "$TXT" | grep -E -o 'step [0-9] of 8' | head -1 | grep -E -o '[0-9]' | head -1)
             case "$STEPNO" in ''|*[!0-9]*) STEPNO=0 ;; esac
-            if [ $((i % 5)) -eq 0 ]; then hb "loop iter $i step=$STEPNO busy=$BUSY advanced=$advanced"; fi
+            if [ $((i % 5)) -eq 0 ]; then hb "loop iter $i step=$STEPNO busy=$BUSY advanced=$advanced"; else echo "$(date -u +%H:%M:%SZ) T+${SECONDS}s iter=$i step=$STEPNO busy=$BUSY advanced=$advanced" >> /tmp/prog/progress.txt; fi
             if [ "$STEPNO" != "$LASTSTEP" ]; then
               echo "demo: now on step $STEPNO"
               LASTSTEP=$STEPNO; gestureFires=0; lastGestureIter=-100
@@ -1007,7 +1037,7 @@ jobs:
                     gestureFires=$((gestureFires+1)); lastGestureIter=$i
                     cliclick ku:cmd,ctrl,alt,shift,fn || true
                     sleep 1
-                    /tmp/ax_driver dtap || true
+                    run_to 15 /tmp/ax_driver dtap || true
                     run_to 10 osascript -e 'tell application "System Events" to key code 59' -e 'delay 0.15' -e 'tell application "System Events" to key code 59' >/dev/null 2>&1 || true
                     cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
                     sleep 2
@@ -1105,7 +1135,7 @@ jobs:
               fi
             fi
             shot /tmp/cur.png 2>/dev/null || true
-            R=$(/tmp/find_target /tmp/cur.png card 2>/dev/null || echo none)
+            R=$(run_to 20 /tmp/find_target /tmp/cur.png card 2>/dev/null || echo none)
             MODE="${R%% *}"; XY="${R#* }"
             echo "demo iter $i: $R (advanced=$advanced idle=$idleStreak)"
             case "$MODE" in
@@ -1171,7 +1201,7 @@ jobs:
           # walkthrough voice finish before trying it.
           echo "letting the demo voice finish... (T+${SECONDS}s)"
           if [ "$SECONDS" -lt 2160 ]; then sleep 60; else echo "skipping voice-settle wait (late)"; fi
-          /tmp/ax_driver dump > evidence/ax-final-tree.log 2>/dev/null || true
+          run_to 30 /tmp/ax_driver dump > evidence/ax-final-tree.log 2>/dev/null || true
           # ---- TEXT interaction: double-tap Control to type instead of talk ----
           # The app is live and quiet (the demo voice was waited out above).
           # Double-tap Control to open the text box, type a message, send it,
@@ -1186,7 +1216,7 @@ jobs:
           else
           for try in 1 2 3 4; do
             shot /tmp/sm.png 2>/dev/null || true
-            SXY=$(/tmp/find_target /tmp/sm.png showme 2>/dev/null || echo NONE)
+            SXY=$(run_to 20 /tmp/find_target /tmp/sm.png showme 2>/dev/null || echo NONE)
             [ "$SXY" = "NONE" ] && break
             echo "card still up before text trigger; clicking $SXY"
             cliclick c:${SXY%,*},${SXY#*,} || true
@@ -1195,7 +1225,7 @@ jobs:
           echo "clean control double-tap to toggle text input"
           cliclick ku:cmd,ctrl,alt,shift,fn || true
           sleep 1
-          /tmp/ax_driver dtap || true
+          run_to 15 /tmp/ax_driver dtap || true
           run_to 10 osascript -e 'tell application "System Events" to key code 59' -e 'delay 0.15' -e 'tell application "System Events" to key code 59' >/dev/null 2>&1 || true
           cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
           sleep 2
@@ -1205,7 +1235,7 @@ jobs:
           sleep 1
           cliclick ku:cmd,ctrl,alt,shift,fn || true
           sleep 1
-          /tmp/ax_driver dtap || true
+          run_to 15 /tmp/ax_driver dtap || true
           cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
           sleep 3
           shot evidence/shots/text-01-open.png 2>/dev/null || true
