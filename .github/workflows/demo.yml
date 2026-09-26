@@ -108,6 +108,17 @@ jobs:
           shot()   { run_to 8 screencapture -x "$1" 2>/dev/null || true; }
           sa()     { run_to 10 SwitchAudioSource "$@" || true; }
           lsafe()  { run_to 25 log show "$@"; }
+          # cliclick posts CGEvents through the window server — another wedge
+          # candidate (run 36268374702 froze mid-loop right where the first
+          # bare cliclick of the loop fires). Every call site now goes through
+          # this bound wrapper.
+          cl()     { run_to 15 cliclick "$@" || true; }
+          # `open` is the one wedge candidate that was never bounded: app
+          # launch and the clicky:// callback both go through LaunchServices,
+          # which can block forever on a wedged VM (both 36264641321 runs
+          # hung the full cap with zero heartbeats — everything after this
+          # step's start IS bounded, but the bare opens were not).
+          opn() { run_to 15 open "$@" || echo "OPEN-BOUND-HIT: $*"; }
           # ---- progress branch: the live channel --------------------------------
           # hb used to PATCH this job's check-run title, but GitHub now blocks
           # check-run mutation via GITHUB_TOKEN (annotations prove it — run
@@ -138,15 +149,24 @@ jobs:
           }
           # ---- reaper -------------------------------------------------------------
           # Last-resort insurance: whatever wedges despite the bounds above, the
-          # step shell dies at T+2700s so the Logs/Upload steps (if: always())
+          # step shell is freed at T+2700s so the Logs/Upload steps (if: always())
           # always run and the evidence always uploads (cancelled jobs lose
           # everything — five runs lost this way).
           ( sleep 2700
-            echo "$(date -u +%H:%M:%SZ) REAPER: killing wedged step at T+${SECONDS}s" >> /tmp/prog/progress.txt 2>/dev/null || true
+            echo "$(date -u +%H:%M:%SZ) REAPER: firing at T+${SECONDS}s" >> /tmp/prog/progress.txt 2>/dev/null || true
             git -C /tmp/prog add -A >/dev/null 2>&1 || true
             git -C /tmp/prog commit -q -m "reaper" >/dev/null 2>&1 || true
-            run_to 45 git -C /tmp/prog push -q -f origin HEAD:progress >/dev/null 2>&1 || true
-            kill -9 $$ ) >/dev/null 2>&1 &
+            run_to 60 git -C /tmp/prog push -q -f origin HEAD:progress >/dev/null 2>&1 || true
+            # 36268374702 lesson: kill -9 on the step shell alone does NOT end
+            # the step — the wedged foreground child keeps holding the runner's
+            # stdout pipe, so the runner waits forever and the 50-min cap
+            # discards everything. Kill the shell's children instead: the
+            # blocked wait() returns, the script resumes its tail normally.
+            pkill -9 -P $$ 2>/dev/null || true
+            sleep 3
+            pkill -9 -P $$ 2>/dev/null || true
+            sleep 3
+            kill -9 $$ 2>/dev/null || true ) >/dev/null 2>&1 &
           hb "launch step started"
           mkdir -p evidence/shots
           # Vision helper (Swift, so no pip — macOS runners use an externally
@@ -599,10 +619,10 @@ jobs:
           sa -t input  -s "BlackHole 2ch" || true
           sa -t output -s "BlackHole 2ch" || true
           echo "pre-launch audio: $(sa -c 2>/dev/null || echo unknown)"
-          open "$HOME/HeyClicky.app"
+          opn "$HOME/HeyClicky.app"
           sleep 18
           { set +x; } 2>/dev/null
-          open "clicky://auth-callback#access_token=${AT}&refresh_token=${RT}&expires_in=3600&token_type=bearer"
+          opn "clicky://auth-callback#access_token=${AT}&refresh_token=${RT}&expires_in=3600&token_type=bearer"
           set -x
           # AUTH GATE: do not click until the injected session has actually signed
           # the app in. Otherwise the first clicks land on the "Sign in with
@@ -625,7 +645,7 @@ jobs:
             # registration right after launch. Re-fire it once before giving up.
             echo "auth not confirmed yet; re-firing the token callback once"
             { set +x; } 2>/dev/null
-            open "clicky://auth-callback#access_token=${AT}&refresh_token=${RT}&expires_in=3600&token_type=bearer"
+            opn "clicky://auth-callback#access_token=${AT}&refresh_token=${RT}&expires_in=3600&token_type=bearer"
             set -x
             for i in $(seq 1 20); do
               if lsafe --predicate 'subsystem == "com.humansongs.clicky"' --info --debug --last 40s 2>/dev/null | grep -qiE "authenticated as|signed in"; then
@@ -666,18 +686,18 @@ jobs:
                 # is finished. (Only trust this once we've actually advanced.)
                 [ "$advanced" -ge 5 ] && done_onboard=1 ;;
               dialog)
-                cliclick c:${XY%,*},${XY#*,} || true
+                cl c:${XY%,*},${XY#*,} || true
                 advanced=$((advanced+1)); noneStreak=0 ;;
               blue)
                 # avoid hammering the exact same spot forever (stuck) — still click,
                 # but count repeats toward the done heuristic.
-                cliclick c:${XY%,*},${XY#*,} || true
+                cl c:${XY%,*},${XY#*,} || true
                 [ "$XY" = "$lastXY" ] && noneStreak=$((noneStreak+1)) || { advanced=$((advanced+1)); noneStreak=0; }
                 lastXY="$XY" ;;
               *)
                 noneStreak=$((noneStreak+1))
                 if [ "$advanced" -lt 3 ]; then
-                  cliclick c:517,486 || true          # survey: pick "Claude"
+                  cl c:517,486 || true          # survey: pick "Claude"
                 fi ;;
             esac
             shot "evidence/shots/onboard-$(printf %02d "$i").png" 2>/dev/null || true
@@ -742,7 +762,7 @@ jobs:
               SXY=$(run_to 20 /tmp/find_target /tmp/sm.png showme 2>/dev/null || echo NONE)
               echo "showme try $try -> $SXY"
               [ "$SXY" = "NONE" ] && break
-              cliclick c:${SXY%,*},${SXY#*,} || true
+              cl c:${SXY%,*},${SXY#*,} || true
             done
           fi
           shot evidence/shots/after-showme.png 2>/dev/null || true
@@ -798,7 +818,7 @@ jobs:
               if [ "$SECONDS" -gt "$BUDGET_SELECT" ]; then
                 echo "select_bh: budget hit before try $t"; return 1
               fi
-              open -a "$HOME/HeyClicky.app" 2>/dev/null || true
+              opn -a "$HOME/HeyClicky.app" 2>/dev/null || true
               sleep 1
               # POSIX ERE (-E): the old BRE \| alternation is GNU-only — BSD
               # grep treats it literally, so the locate never matched.
@@ -807,7 +827,7 @@ jobs:
               BY=$(printf '%s' "$LINE" | awk '{gsub(/.*@ /,""); print $1}' | cut -d, -f2)
               if [ -z "$BX" ]; then
                 echo "bh try $t: dropdown not found in tree (card hidden?)"
-                cliclick kp:esc || true; sleep 1; continue
+                cl kp:esc || true; sleep 1; continue
               fi
               BX=$((BX + 86)); BY=$((BY + 8))   # 172x16 button -> center
               echo "bh try $t: dropdown at ${BX},${BY} (target $L)"
@@ -816,28 +836,28 @@ jobs:
               # (354638: menu-open dumps + three verify dumps per try wedged
               # the app and burned the 50-min cap) and never leave it open
               # across AX calls.
-              cliclick c:$BX,$BY || true        # open the menu
+              cl c:$BX,$BY || true        # open the menu
               sleep 1
               shot "evidence/shots/bh-menu-t${t}.png" 2>/dev/null || true
               R=$(axd 6 press "$Q" 2>/dev/null || echo DRIVER-ERROR)
               echo "bh try $t axpress -> $R"
-              cliclick kp:esc || true; sleep 1  # close immediately, then verify
+              cl kp:esc || true; sleep 1  # close immediately, then verify
               if axd 4 dump 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
                 echo "dropdown verified: $L selected (try $t axpress)"; return 0
               fi
-              cliclick c:$BX,$BY || true; sleep 1
-              cliclick m:$BX,$((BY + HO)) || true   # hover the target item row
+              cl c:$BX,$BY || true; sleep 1
+              cl m:$BX,$((BY + HO)) || true   # hover the target item row
               sleep 1
-              cliclick kp:return || true            # Return selects highlighted row
-              cliclick kp:esc || true; sleep 1      # menu closes itself on select; esc harmless
+              cl kp:return || true            # Return selects highlighted row
+              cl kp:esc || true; sleep 1      # menu closes itself on select; esc harmless
               if axd 4 dump 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
                 echo "dropdown verified: $L selected (try $t hover+return)"; return 0
               fi
-              cliclick c:$BX,$BY || true; sleep 1
-              cliclick t:$TS || true                # keyboard type-select fallback
+              cl c:$BX,$BY || true; sleep 1
+              cl t:$TS || true                # keyboard type-select fallback
               sleep 1
-              cliclick kp:return || true
-              cliclick kp:esc || true; sleep 1
+              cl kp:return || true
+              cl kp:esc || true; sleep 1
               if axd 4 dump 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
                 echo "dropdown verified: $L selected (try $t typeselect)"; return 0
               fi
@@ -1006,11 +1026,11 @@ jobs:
                   if [ "$gestureFires" -lt 4 ] && [ $((i - lastGestureIter)) -ge 4 ]; then
                     gestureFires=$((gestureFires+1)); lastGestureIter=$i
                     ( afplay "$HOME/circle.aiff" 2>/dev/null || true ) &
-                    cliclick kd:ctrl,alt || true
+                    cl kd:ctrl,alt || true
                     sleep 2
-                    cliclick dd:512,305 w:50 dm:572,330 dm:597,390 dm:572,450 dm:512,475 dm:452,450 dm:427,390 dm:452,330 dm:512,305 du: || true
+                    cl dd:512,305 w:50 dm:572,330 dm:597,390 dm:572,450 dm:512,475 dm:452,450 dm:427,390 dm:452,330 dm:512,305 du: || true
                     sleep 3
-                    cliclick ku:ctrl,alt || true
+                    cl ku:ctrl,alt || true
                     echo "demo gesture iter $i: hold+circle+ask (${TXT:0:100})"
                   fi ;;
                 *"draw"*)
@@ -1018,9 +1038,9 @@ jobs:
                   if [ "$gestureFires" -lt 4 ] && [ $((i - lastGestureIter)) -ge 4 ]; then
                     gestureFires=$((gestureFires+1)); lastGestureIter=$i
                     ( afplay "$HOME/draw.aiff" 2>/dev/null || true ) &
-                    cliclick kd:ctrl,alt || true
+                    cl kd:ctrl,alt || true
                     sleep 8
-                    cliclick ku:ctrl,alt || true
+                    cl ku:ctrl,alt || true
                     echo "demo gesture iter $i: hold+ask-to-draw (${TXT:0:100})"
                   fi ;;
                 *"double-tap"*|*"not in the mood"*|*"words land here"*)
@@ -1035,11 +1055,11 @@ jobs:
                   # hears us either way.
                   if [ "$gestureFires" -lt 4 ] && [ $((i - lastGestureIter)) -ge 4 ]; then
                     gestureFires=$((gestureFires+1)); lastGestureIter=$i
-                    cliclick ku:cmd,ctrl,alt,shift,fn || true
+                    cl ku:cmd,ctrl,alt,shift,fn || true
                     sleep 1
                     run_to 15 /tmp/ax_driver dtap || true
                     run_to 10 osascript -e 'tell application "System Events" to key code 59' -e 'delay 0.15' -e 'tell application "System Events" to key code 59' >/dev/null 2>&1 || true
-                    cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
+                    cl kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
                     sleep 2
                     FXY=$(axd 6 find "words land here" 2>/dev/null || echo "")
                     case "$FXY" in
@@ -1047,18 +1067,18 @@ jobs:
                       *) FXY=$(axd 6 find "field" 2>/dev/null || echo "") ;;
                     esac
                     case "$FXY" in
-                      *,*) cliclick c:${FXY%,*},${FXY#*,} || true; sleep 1 ;;
+                      *,*) cl c:${FXY%,*},${FXY#*,} || true; sleep 1 ;;
                     esac
-                    cliclick t:'Hey Claude, make me a billion-dollar app, make no mistakes' || true
+                    cl t:'Hey Claude, make me a billion-dollar app, make no mistakes' || true
                     # Return ONLY when a composer is provably present (AX
                     # field hit, or the card grew new elements after the
                     # double-tap). A blind Return could land on a focused
                     # Skip button and skip the demo.
                     case "$FXY" in
-                      *,*) cliclick kp:return || true ;;
+                      *,*) cl kp:return || true ;;
                       *) TXT2=$(axd 6 cardtext 2>/dev/null || echo "")
                          if [ -n "$TXT2" ] && [ "$TXT2" != "$TXT" ]; then
-                           cliclick kp:return || true
+                           cl kp:return || true
                            ( afplay "$HOME/clip.aiff" 2>/dev/null || true ) &
                          fi ;;
                     esac
@@ -1071,9 +1091,9 @@ jobs:
                     CLIP="$HOME/name.aiff"
                     case "$TXT" in *"dictat"*) CLIP="$HOME/dictate.aiff" ;; esac
                     ( afplay "$CLIP" 2>/dev/null || true ) &
-                    cliclick kd:ctrl,alt || true
+                    cl kd:ctrl,alt || true
                     sleep 8
-                    cliclick ku:ctrl,alt || true
+                    cl ku:ctrl,alt || true
                     echo "demo gesture iter $i: hold-to-talk (${TXT:0:100})"
                   fi ;;
                 *"apple virtual sound device"*|*"null audio device"*)
@@ -1122,9 +1142,9 @@ jobs:
                       *) FXY=$(axd 6 find "field" 2>/dev/null || echo "") ;;
                     esac
                     case "$FXY" in
-                      *,*) cliclick c:${FXY%,*},${FXY#*,} || true; sleep 1 ;;
+                      *,*) cl c:${FXY%,*},${FXY#*,} || true; sleep 1 ;;
                     esac
-                    cliclick t:'Hey Claude, make me a billion-dollar app, make no mistakes' || true
+                    cl t:'Hey Claude, make me a billion-dollar app, make no mistakes' || true
                     echo "demo gesture iter $i: typed into field (${TXT:0:100})"
                   fi ;;
               esac
@@ -1140,7 +1160,7 @@ jobs:
             echo "demo iter $i: $R (advanced=$advanced idle=$idleStreak)"
             case "$MODE" in
               dialog)
-                cliclick c:${XY%,*},${XY#*,} || true
+                cl c:${XY%,*},${XY#*,} || true
                 advanced=$((advanced+1)); idleStreak=0 ;;
               blue)
                 YT="${XY#*,}"
@@ -1155,13 +1175,13 @@ jobs:
                   # driven (and a click that raced the animation gets a retry).
                   sameCount=$((sameCount+1))
                   if [ "$sameCount" -ge 2 ]; then
-                    cliclick c:${XY%,*},${XY#*,} || true
+                    cl c:${XY%,*},${XY#*,} || true
                     advanced=$((advanced+1)); idleStreak=0; sameCount=0
                   else
                     idleStreak=$((idleStreak+1))
                   fi
                 else
-                  cliclick c:${XY%,*},${XY#*,} || true
+                  cl c:${XY%,*},${XY#*,} || true
                   advanced=$((advanced+1)); idleStreak=0
                   lastXY="$XY"; sameCount=0
                 fi ;;
@@ -1219,31 +1239,31 @@ jobs:
             SXY=$(run_to 20 /tmp/find_target /tmp/sm.png showme 2>/dev/null || echo NONE)
             [ "$SXY" = "NONE" ] && break
             echo "card still up before text trigger; clicking $SXY"
-            cliclick c:${SXY%,*},${SXY#*,} || true
+            cl c:${SXY%,*},${SXY#*,} || true
             sleep 3
           done
           echo "clean control double-tap to toggle text input"
-          cliclick ku:cmd,ctrl,alt,shift,fn || true
+          cl ku:cmd,ctrl,alt,shift,fn || true
           sleep 1
           run_to 15 /tmp/ax_driver dtap || true
           run_to 10 osascript -e 'tell application "System Events" to key code 59' -e 'delay 0.15' -e 'tell application "System Events" to key code 59' >/dev/null 2>&1 || true
-          cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
+          cl kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
           sleep 2
           shot evidence/shots/text-00-dictation.png 2>/dev/null || true
           # Belt-and-suspenders: dismiss any lingering macOS dictation prompt, retry.
-          cliclick c:428,289 || true      # "Don't Ask Again" (harmless if absent)
+          cl c:428,289 || true      # "Don't Ask Again" (harmless if absent)
           sleep 1
-          cliclick ku:cmd,ctrl,alt,shift,fn || true
+          cl ku:cmd,ctrl,alt,shift,fn || true
           sleep 1
           run_to 15 /tmp/ax_driver dtap || true
-          cliclick kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
+          cl kd:ctrl w:70 ku:ctrl w:140 kd:ctrl w:70 ku:ctrl || true
           sleep 3
           shot evidence/shots/text-01-open.png 2>/dev/null || true
           echo "typing a message"
-          cliclick t:"Hey Clicky, what is on my screen right now?" || true
+          cl t:"Hey Clicky, what is on my screen right now?" || true
           sleep 2
           shot evidence/shots/text-02-typed.png 2>/dev/null || true
-          cliclick kp:return || true       # send
+          cl kp:return || true       # send
           # Let the agent respond and capture it.
           for t in $(seq -w 1 8); do
             shot "evidence/shots/text-resp-${t}.png" 2>/dev/null || true
