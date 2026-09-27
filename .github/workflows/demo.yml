@@ -140,13 +140,33 @@ jobs:
             cp -f evidence/*.log /tmp/prog/ 2>/dev/null || true
             git -C /tmp/prog add -A >/dev/null 2>&1 || true
             git -C /tmp/prog commit -q -m "T+${SECONDS}s" >/dev/null 2>&1 || true
-            run_to 45 git -C /tmp/prog push -q -f origin HEAD:progress >/dev/null 2>&1 || true
+            run_to 45 git -C /tmp/prog push -q -f origin HEAD:progress >/dev/null 2>&1 && touch /tmp/prog/lastpush.ok || true
           }
           hb() {
             echo "T+${SECONDS}s: $*"
             echo "$(date -u +%H:%M:%SZ) T+${SECONDS}s: $*" >> /tmp/prog/progress.txt
             push_prog &
           }
+          # Stall-detector: if no push has SUCCEEDED for 10 min while this step
+          # is supposed to be heartbeating, the loop is wedged in something the
+          # per-call bounds missed — reap early instead of waiting for the
+          # T+2700 reaper, so the tail (logs+artifacts) still runs.
+          ( while :; do sleep 60
+              if [ -f /tmp/prog/lastpush.ok ]; then
+                AGE=$(( $(date +%s) - $(stat -f %m /tmp/prog/lastpush.ok 2>/dev/null || echo 0) ))
+              else
+                AGE=$(( SECONDS > 300 ? SECONDS - 300 : 0 ))
+              fi
+              if [ "$AGE" -gt 600 ]; then
+                B64=$(printf 'STALL-REAPER at %s (no push for %ss)\n' "$(date -u +%H:%M:%SZ)" "$AGE" | base64 | tr -d '\n')
+                run_to 30 gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/stall-$GITHUB_RUN_ID.txt" -f message=stall-reaper -f branch=progress -f content="$B64" >/dev/null 2>&1 || true
+                pkill -9 -P $$ 2>/dev/null || true
+                sleep 3
+                pkill -9 -P $$ 2>/dev/null || true
+                sleep 3
+                kill -9 $$ 2>/dev/null || true
+              fi
+            done ) >/dev/null 2>&1 &
           # ---- reaper -------------------------------------------------------------
           # Last-resort insurance: whatever wedges despite the bounds above, the
           # step shell is freed at T+2700s so the Logs/Upload steps (if: always())
@@ -161,7 +181,9 @@ jobs:
           ALIVE=0
           ( while :; do sleep 300; ALIVE=$((ALIVE+1)); \
               B64=$(printf 'alive tick %s at %s (approx T+%ss)\n' "$ALIVE" "$(date -u +%H:%M:%SZ)" "$((ALIVE*300))" | base64 | tr -d '\n'); \
-              run_to 30 gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/alive-$GITHUB_RUN_ID-$ALIVE.txt" -f message="alive $ALIVE" -f branch=progress -f content="$B64" >/dev/null 2>&1 || true; done ) >/dev/null 2>&1 &
+              ERR=$(run_to 30 gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/alive-$GITHUB_RUN_ID-$ALIVE.txt" -f message="alive $ALIVE" -f branch=progress -f content="$B64" 2>&1 >/dev/null); RC=$?; \
+              [ "$RC" -ne 0 ] && printf '%s ALIVE-BEACON-FAIL rc=%s: %s\n' "$(date -u +%H:%M:%SZ)" "$RC" "$(printf '%s' "$ERR" | head -c 300)" >> /tmp/prog/progress.txt; \
+              true; done ) >/dev/null 2>&1 &
           ( sleep 2700
             B64=$(printf 'REAPER fired at %s (T+2700s)\n' "$(date -u +%H:%M:%SZ)" | base64 | tr -d '\n'); \
             run_to 30 gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/reaper-$GITHUB_RUN_ID.txt" -f message=reaper -f branch=progress -f content="$B64" >/dev/null 2>&1 || true
@@ -1301,10 +1323,10 @@ jobs:
             echo "skipping audio-witness analysis (late, T+${SECONDS}s) — the m4a still uploads for offline analysis"
           elif [ -s evidence/av-audio.m4a ]; then
             echo "--- BlackHole audio witness: volumedetect ---"
-            ffmpeg -hide_banner -i evidence/av-audio.m4a -af volumedetect -f null /dev/null 2>&1 \
+            run_to 120 ffmpeg -hide_banner -i evidence/av-audio.m4a -af volumedetect -f null /dev/null 2>&1 \
               | grep -o 'mean_volume: [-0-9.]* dB\|max_volume: [-0-9.]* dB' || true
             echo "--- BlackHole audio witness: silencedetect (clip slots break the silence) ---"
-            ffmpeg -hide_banner -i evidence/av-audio.m4a -af silencedetect=noise=-45dB:d=4 -f null /dev/null 2>&1 \
+            run_to 120 ffmpeg -hide_banner -i evidence/av-audio.m4a -af silencedetect=noise=-45dB:d=4 -f null /dev/null 2>&1 \
               | grep -Eo 'silence_[A-Za-z_]+: [^ ]*' | head -24 || true
           else
             echo "no av-audio.m4a either; audio log tail:"; tail -4 evidence/av-audio.log 2>/dev/null || true
