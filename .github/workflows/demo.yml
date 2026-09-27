@@ -152,7 +152,19 @@ jobs:
           # step shell is freed at T+2700s so the Logs/Upload steps (if: always())
           # always run and the evidence always uploads (cancelled jobs lose
           # everything — five runs lost this way).
+          # Beacon via the contents API (no git, no index.lock, unique path so
+          # no SHA dance): if the VM freezes entirely this never lands, but if
+          # only git is wedged the beacon proves the reaper DID fire. Every
+          # beacon gets a unique path (contents PUT of an existing file needs
+          # its SHA; a fresh path just creates). b64 captured first — $(base64)
+          # inside the args would read the shell's stdin, not the pipe.
+          ALIVE=0
+          ( while :; do sleep 300; ALIVE=$((ALIVE+1)); \
+              B64=$(printf 'alive tick %s at %s (approx T+%ss)\n' "$ALIVE" "$(date -u +%H:%M:%SZ)" "$((ALIVE*300))" | base64 | tr -d '\n'); \
+              run_to 30 gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/alive-$GITHUB_RUN_ID-$ALIVE.txt" -f message="alive $ALIVE" -f branch=progress -f content="$B64" >/dev/null 2>&1 || true; done ) >/dev/null 2>&1 &
           ( sleep 2700
+            B64=$(printf 'REAPER fired at %s (T+2700s)\n' "$(date -u +%H:%M:%SZ)" | base64 | tr -d '\n'); \
+            run_to 30 gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/reaper-$GITHUB_RUN_ID.txt" -f message=reaper -f branch=progress -f content="$B64" >/dev/null 2>&1 || true
             echo "$(date -u +%H:%M:%SZ) REAPER: firing at T+${SECONDS}s" >> /tmp/prog/progress.txt 2>/dev/null || true
             git -C /tmp/prog add -A >/dev/null 2>&1 || true
             git -C /tmp/prog commit -q -m "reaper" >/dev/null 2>&1 || true
@@ -1197,7 +1209,9 @@ jobs:
             if [ $((i % 4)) -eq 0 ] && [ "$BUSY" = 0 ]; then
               shot /tmp/meter_now.png 2>/dev/null || true
               if [ -f /tmp/meter_prev.png ]; then
-                PS=$(ffmpeg -hide_banner -i /tmp/meter_prev.png -i /tmp/meter_now.png \
+                # Bare ffmpeg froze run 36274232946's loop between iters 5-10 —
+                # this probe first fires at iter 8, inside that window. Bound it.
+                PS=$(run_to 60 ffmpeg -hide_banner -i /tmp/meter_prev.png -i /tmp/meter_now.png \
                   -filter_complex "[0:v]crop=234:26:395:345[a];[1:v]crop=234:26:395:345[b];[a][b]psnr" \
                   -f null /dev/null 2>&1 | grep -Eo 'average:[0-9.]+|average:inf' | head -1)
                 echo "meter Δ iter $i: $PS (inf = static bars, finite = moving)"
