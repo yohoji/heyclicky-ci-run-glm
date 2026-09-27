@@ -157,7 +157,14 @@ jobs:
           mark() { # mark <label>
             case "$i" in 5|6|7|8|9|10|11|12) ;; *) return 0 ;; esac
             MARKN=$((MARKN+1))
-            B64=$(printf '%s at %s\n' "$1" "$(date -u +%H:%M:%SZ)" | base64 | tr -d '\n')
+            # Enriched content: memory pressure + top RSS + disk, so an OOM /
+            # swap-death freeze is visible in the beacon itself.
+            B64=$(printf '%s at %s\nmem: %s\ndisk: %s\ntop: %s\n' \
+              "$1" "$(date -u +%H:%M:%SZ)" \
+              "$(vm_stat 2>/dev/null | sed -n '1p;4p;7p' | tr '\n' ' ')" \
+              "$(df -h / 2>/dev/null | tail -1)" \
+              "$(ps -eo rss,comm 2>/dev/null | sort -rn | head -4 | tr '\n' ';')" \
+              | base64 | tr -d '\n')
             run_to 20 gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/mark-$GITHUB_RUN_ID-$MARKN.txt" -f message="$1" -f branch=progress -f content="$B64" >/dev/null 2>&1 || true
           }
           # Stall-detector: if no push has SUCCEEDED for 10 min while this step
@@ -640,23 +647,17 @@ jobs:
           # can HEAR the app speak. Audio comes from BlackHole (where the app's TTS
           # and the fed clip both play). May be black if ffmpeg lacks Screen
           # Recording; the frame burst above is the reliable video-only fallback.
+          # FREEZE BISECT (runs 36312820899/36314125991: deterministic VM-wide
+          # userland freeze ~T+530-560, i.e. 30-60s after the loop's audio
+          # phase begins; the last loop marker before death was an axd call but
+          # death was time-anchored, not call-anchored). Both long-lived
+          # avfoundation recorders are DISABLED for this run — if the loop
+          # survives past T+800, one of these was the killer; re-add one at a
+          # time to name it. The frame burst (shot=bounded screencapture) and
+          # log stream stay.
           echo "--- avfoundation devices ---"; run_to 15 ffmpeg -hide_banner -f avfoundation -list_devices true -i "" 2>&1 | grep -iE "screen|blackhole" || true
-          # Record to .mkv: Matroska stays playable even if the recorder is cut
-          # off (mp4 needs a clean finalize for its moov atom, which SIGKILL broke).
-          ffmpeg -nostdin -y -f avfoundation -capture_cursor 1 -framerate 12 \
-            -i "Capture screen 0:BlackHole 2ch" -t 2100 -pix_fmt yuv420p \
-            -c:v libx264 -preset ultrafast -c:a aac \
-            evidence/av.mkv > evidence/av.log 2>&1 &
-          AVVID=$!
-          # AUDIO-ONLY BlackHole witness: the video recorder died twice on the
-          # VM's flaky video device (IOServiceMatching AppleM2ScalerParavirt)
-          # before writing anything; an audio-only avfoundation input has no
-          # video device, so it survives. If the fed clips show up in this
-          # recording, the afplay->BlackHole loopback path is PROVEN and any
-          # remaining stall is app-side.
-          ( ffmpeg -nostdin -y -f avfoundation -i ':BlackHole 2ch' -t 2100 \
-              -c:a aac evidence/av-audio.m4a > evidence/av-audio.log 2>&1 ) &
-          AVAUD=$!
+          AVVID=""; AVAUD=""
+          echo "BISECT: avfoundation recorders disabled this run (AVVID/AVAUD unset)"
           # Live app-log stream (log show's window kept missing the moment).
           log stream --style compact --predicate 'processImagePath CONTAINS "HeyClicky"' > /tmp/app-stream.log 2>&1 &
           APPLOG=$!
@@ -1330,12 +1331,11 @@ jobs:
           # Stop the frame-burst recorder, then stitch the frames into an mp4.
           # framerate 3 keeps it watchable.
           # Stop the ffmpeg av recorder with SIGINT so it writes a valid mp4.
-          kill -INT "$AVVID" 2>/dev/null || true
-          sleep 5; kill -9 "$AVVID" 2>/dev/null || true
+          [ -n "$AVVID" ] && { kill -INT "$AVVID" 2>/dev/null || true; sleep 5; kill -9 "$AVVID" 2>/dev/null || true; }
           ls -la evidence/av.mkv 2>/dev/null || echo "no av.mkv (recorder may have failed to open the screen device)"
           echo "--- av.log ---"; tail -5 evidence/av.log 2>/dev/null || true
           # Audio witness: when did sound actually enter BlackHole?
-          kill "$AVAUD" 2>/dev/null || true
+          [ -n "$AVAUD" ] && kill "$AVAUD" 2>/dev/null || true
           kill "$APPLOG" 2>/dev/null || true
           sleep 1
           cp /tmp/app-stream.log evidence/app-stream.log 2>/dev/null || true
