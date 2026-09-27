@@ -957,8 +957,18 @@ jobs:
               | grep -o 'mean_volume: [-0-9.]* dB' | tail -1 > "$4" || true
           }
           : > /tmp/probe.err
-          echo "BH-INPUT self-test: $(dev_probe 'BlackHole 2ch' /tmp/bh.wav "$HOME/clip.aiff" /tmp/bh-mv.txt)"
-          echo "AVSD-INPUT self-test: $(dev_probe 'Apple Virtual Sound Device' /tmp/avsd.wav "$HOME/name.aiff" /tmp/avsd-mv.txt)"
+          # FREEZE BISECT round 3 (run 36316040232: feeder AND recorders off,
+          # STILL froze at T+527 — the freeze follows the self-test, i.e. the
+          # last new work before every death is dev_probe's two
+          # `ffmpeg -f avfoundation -i ":dev"` captures ~60-90s prior). The
+          # self-test is DISABLED this run: BH_HEARD stays 0 (card stays
+          # BlackHole, which is the correct device anyway). If the loop
+          # survives past T+800 now, dev_probe's avfoundation captures were
+          # the wedge — they poisoned coreaudiod/HAL for everything after.
+          BH_HEARD=0; AVSD_HEARD=0
+          echo "BISECT: audio self-test (dev_probe) disabled this run (BH=0 AVSD=0 forced)"
+          # echo "BH-INPUT self-test: $(dev_probe 'BlackHole 2ch' /tmp/bh.wav "$HOME/clip.aiff" /tmp/bh-mv.txt)"
+          # echo "AVSD-INPUT self-test: $(dev_probe 'Apple Virtual Sound Device' /tmp/avsd.wav "$HOME/name.aiff" /tmp/avsd-mv.txt)"
           heard() {  # heard <"mean_volume: -27.2 dB"> — true if > -60 dB
             local n; n=$(printf '%s' "$1" | grep -o '\-[0-9.]*' | head -1)
             [ -n "$n" ] && awk -v v="$n" 'BEGIN{exit !(v > -60)}'
