@@ -983,13 +983,22 @@ jobs:
             tail -6 /tmp/probe.err 2>/dev/null || true
           fi
           echo "feeding the demo clips and driving the demo steps..."
-          ( for r in 1 2 3 4 5 6 7 8; do
-              for f in clip name draw circle dictate; do
-                afplay "$HOME/$f.aiff" 2>/dev/null || true
-                sleep 15
-              done
-            done ) &
-          CLIPS=$!
+          # FREEZE BISECT round 2 (run 36315053247: recorders off, STILL froze
+          # at T+775, i.e. ~60s after self-test+loop start — the same offset
+          # as run 36314125991). Remaining loop-start newcomer: this feeder
+          # (afplay through BlackHole round-robin). DISABLED this run — the
+          # gesture blocks still play their own clips on demand. If the loop
+          # survives past T+900 now, afplay->coreaudiod->BlackHole was the
+          # wedge; if it still freezes, the app/AX/pixel stack is next.
+          CLIPS=""
+          echo "BISECT: round-robin feeder disabled this run (CLIPS unset)"
+          # ( for r in 1 2 3 4 5 6 7 8; do
+          #     for f in clip name draw circle dictate; do
+          #       afplay "$HOME/$f.aiff" 2>/dev/null || true
+          #       sleep 15
+          #     done
+          #   done ) &
+          # CLIPS=$!
           advanced=0; idleStreak=0; lastXY=""; sameCount=0
           bhTries=0; lastBhIter=-100; toggleTries=0
           LASTSTEP=0; gestureFires=0; lastGestureIter=-100
@@ -1025,7 +1034,7 @@ jobs:
               # after that the gesture blocks play their own clips on demand
               # and the feeder only spams the app's mic mid-response.
               if [ "$STEPNO" -ge 2 ]; then
-                kill "$CLIPS" 2>/dev/null || true
+                [ -n "$CLIPS" ] && kill "$CLIPS" 2>/dev/null || true
                 echo "feeder stopped (gesture blocks play their own clips)"
               fi
             fi
@@ -1271,7 +1280,7 @@ jobs:
             fi
             sleep 4
           done
-          kill "$CLIPS" 2>/dev/null || true
+          [ -n "$CLIPS" ] && kill "$CLIPS" 2>/dev/null || true
           echo "T+${SECONDS}s: demo loop exited (advanced=$advanced, last iter $i)"
           hb "demo loop exited (advanced=$advanced, last iter $i)"
           # The text toggle is ignored while the app is speaking, so let the
