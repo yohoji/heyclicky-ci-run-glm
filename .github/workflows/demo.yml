@@ -440,6 +440,62 @@ jobs:
           guard let app = apps.first else { print("NOPID"); exit(0) }
           let appEl = AXUIElementCreateApplication(app.processIdentifier)
 
+          // FREEZE FIX (runs 36312820899/36314125991/36315053247/36316040232/
+          // 36316705292: VM-wide userland freeze at loop iters 7-8, T+~527-
+          // 775, always inside an axd call). Each axd invocation is a fresh
+          // process making ~1500 AXUIElementCopyAttributeValue calls; every
+          // connection leaves state in the app's AX server. After ~7 iters
+          // (~50 connections, ~10k AX queries) something in the
+          // app/HIServices XPC bridge wedges and takes userland with it.
+          // Fix: ONE persistent server process owns the sole AX connection;
+          // the shell talks to it over a FIFO. Reconnect only if the server
+          // dies. `server` mode: read one command per line, run the same
+          // per-command logic as one-shot mode, print one line, flush.
+          if mode == "server" {
+            setbuf(stdout, nil)
+            while let line = readLine() {
+              let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
+              let cmd = parts.first ?? ""
+              let q = parts.count > 1 ? parts[1].lowercased() : ""
+              switch cmd {
+              case "ping":
+                print("PONG")
+              case "trusted":
+                print(trustedNow() ? "YES" : "NO")
+              default:
+                hits.removeAll(); texts.removeAll(); visited = 0
+                walk(appEl, 0)
+                switch cmd {
+                case "dump":
+                  print(visited <= 1 ? "EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)" : "DUMP scanned=\(visited)")
+                case "cardtext":
+                  print(texts.joined(separator: " ~ ").prefix(1200))
+                case "press", "find":
+                  if visited <= 1 { print("EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)"); break }
+                  let cands = cmd == "press"
+                    ? hits.filter { $0.role != "AXTextField" && $0.role != "AXTextArea" }
+                    : hits
+                  guard let b = (cands.filter { $0.enabled }.first ?? cands.first) else {
+                    print("NOTFOUND trusted=\(trustedNow()) scanned=\(visited)"); break
+                  }
+                  let cx = Int(b.pos.x + b.size.width / 2), cy = Int(b.pos.y + b.size.height / 2)
+                  if cmd == "find" { print("\(cx),\(cy)") }
+                  else if b.enabled, AXUIElementPerformAction(b.el, kAXPressAction as CFString) == .success {
+                    print("PRESSED \(b.role) '\(b.label.prefix(60))' at \(cx),\(cy)")
+                  } else if b.enabled {
+                    click(CGPoint(x: Double(cx), y: Double(cy)))
+                    print("CLICKED \(b.role) '\(b.label.prefix(60))' at \(cx),\(cy)")
+                  } else {
+                    print("PRESS-FAILED \(b.role) '\(b.label.prefix(60))' enabled=false at \(cx),\(cy)")
+                  }
+                default:
+                  print("USAGE")
+                }
+              }
+            }
+            exit(0)
+          }
+
           func axStr(_ el: AXUIElement, _ a: String) -> String? {
             var v: CFTypeRef?
             guard AXUIElementCopyAttributeValue(el, a as CFString, &v) == .success else { return nil }
@@ -835,8 +891,50 @@ jobs:
           # shell's start (= step start).
           BUDGET_SELECT=1200   # no new select_bh menu work after 20:00
           BUDGET_LOOP=1800     # demo loop must exit by 30:00 absolute (tail needs ~8min)
-          axd() {  # axd <secs> <ax_driver args...>: bounded AX call
+          # Persistent AX server: ONE ax_driver process holds the app's sole
+          # AX connection for the whole run (see the freeze fix note in the
+          # swift source). axd <secs> <cmd> [query] sends one command to it
+          # and waits for the answer. Command channel: a plain file the
+          # server `tail -f`s is ALSO racy (append truncation); the FIFO is
+          # fine when there is exactly ONE writer who holds it open for the
+          # run — us. We open fd3 once (outside axd), write commands to it,
+          # and read answers from the server's stdout pipe. Server dead or
+          # wedged -> kill + respawn once; still dead -> one-shot fallback.
+          AXFIFO=/tmp/ax_server.fifo
+          AXSRV=""; AXANS=/tmp/ax_server.ans
+          rm -f "$AXFIFO"; mkfifo "$AXFIFO" 2>/dev/null || true
+          ax_ensure_server() {
+            if [ -n "$AXSRV" ] && kill -0 "$AXSRV" 2>/dev/null; then return 0; fi
+            ( /tmp/ax_driver server <"$AXFIFO" 2>/dev/null | while IFS= read -r l; do printf '%s\n' "$l" > "$AXANS"; done ) &
+            AXSRV=$!
+            sleep 1
+            kill -0 "$AXSRV" 2>/dev/null || AXSRV=""
+          }
+          axd() {  # axd <secs> <cmd> [query]
             local secs=$1; shift
+            local ans
+            ax_ensure_server
+            if [ -n "$AXSRV" ]; then
+              rm -f "$AXANS"
+              printf '%s\n' "$*" >&3    # fd3 held on the FIFO for the whole run
+              local n=0
+              ans=""
+              while [ "$n" -lt $((secs * 5)) ]; do
+                if [ -f "$AXANS" ]; then ans=$(cat "$AXANS" 2>/dev/null); break; fi
+                sleep 0.2; n=$((n+1))
+              done
+              if [ -n "$ans" ]; then
+                printf '%s\n' "$ans"
+                return 0
+              fi
+              # Wedged or dead: hard respawn once, then fall through to
+              # the one-shot fallback this call.
+              kill -9 "$AXSRV" 2>/dev/null || true
+              pkill -9 -x ax_driver 2>/dev/null || true
+              AXSRV=""
+              echo AX-SERVER-RESPAWN
+            fi
+            # One-shot fallback (old behavior, bounded).
             rm -f /tmp/axd.out /tmp/axd.done
             ( /tmp/ax_driver "$@" > /tmp/axd.out 2>/dev/null; echo 1 > /tmp/axd.done ) &
             local p=$! n=0
@@ -851,6 +949,11 @@ jobs:
             wait "$p" 2>/dev/null || true
             if [ -f /tmp/axd.done ]; then cat /tmp/axd.out; else echo AX-TIMEOUT; fi
           }
+          # One writer, one holder: our shell owns fd3 on the FIFO for the
+          # entire run (defined above). Start the server now; the open
+          # blocks until the server holds the read end.
+          ax_ensure_server
+          exec 3>"$AXFIFO"
           select_bh() {  # select_bh [ax-press-query] [target-label] [hover-offset] [type-select]
             local Q="${1:-blackhole}" L="${2:-BlackHole 2ch}"
             local HO="${3:-89}" TS="${4:-Blackhole}"
