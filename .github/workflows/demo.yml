@@ -147,6 +147,19 @@ jobs:
             echo "$(date -u +%H:%M:%SZ) T+${SECONDS}s: $*" >> /tmp/prog/progress.txt
             push_prog &
           }
+          # mark(): sync out-of-band beacon naming the call about to run. The
+          # VM freezes hard at ~T+530-560 (runs 36268374702/36274232946/
+          # 36310729207/36312820899 all died at the same spot) — nothing
+          # userspace runs after it, so the LAST marker to land names the
+          # exact call that tips the runner over. Only in the freeze window
+          # (iters 5-12) to keep commit noise down.
+          MARKN=0
+          mark() { # mark <label>
+            case "$i" in 5|6|7|8|9|10|11|12) ;; *) return 0 ;; esac
+            MARKN=$((MARKN+1))
+            B64=$(printf '%s at %s\n' "$1" "$(date -u +%H:%M:%SZ)" | base64 | tr -d '\n')
+            run_to 20 gh api -X PUT "repos/$GITHUB_REPOSITORY/contents/mark-$GITHUB_RUN_ID-$MARKN.txt" -f message="$1" -f branch=progress -f content="$B64" >/dev/null 2>&1 || true
+          }
           # Stall-detector: if no push has SUCCEEDED for 10 min while this step
           # is supposed to be heartbeating, the loop is wedged in something the
           # per-call bounds missed — reap early instead of waiting for the
@@ -989,7 +1002,9 @@ jobs:
             # the draw gesture every ~10s kept the app in 'thinking…' forever —
             # each re-request restarted its response. While it works, LEAVE IT
             # ALONE: no presses, no gestures, no clips.)
+            mark "pre-axd-cardtext i=$i"
             TXT=$(axd 6 cardtext 2>/dev/null || echo "")
+            mark "post-axd-cardtext i=$i"
             BUSY=0
             # Match ONLY the app's status lines — they always end with the …
             # glyph ("speaking…", "thinking…"). Bare-word matching poisons
@@ -1024,6 +1039,7 @@ jobs:
             # AXEnabled guarantees we never click a dim Continue; the pixel
             # body below stays as the fallback when the tree misses or says no.
             ax_handled=0
+            mark "pre-ax-press i=$i"
             if [ -x /tmp/ax_driver ]; then
               for q in continue next start record done; do
                 AR=$(axd 6 press "$q" 2>/dev/null || echo DRIVER-ERROR)
@@ -1188,7 +1204,9 @@ jobs:
                 echo "demo cardtext iter $i: ${TXT:0:1200}"
               fi
             fi
+            mark "pre-shot-cur i=$i"
             shot /tmp/cur.png 2>/dev/null || true
+            mark "pre-find-card i=$i"
             R=$(run_to 20 /tmp/find_target /tmp/cur.png card 2>/dev/null || echo none)
             MODE="${R%% *}"; XY="${R#* }"
             echo "demo iter $i: $R (advanced=$advanced idle=$idleStreak)"
@@ -1229,7 +1247,9 @@ jobs:
             # a finite low value = the bars moved = the app HEARD something.
             # Skipped while the app is busy — busy iters must stay cheap.
             if [ $((i % 4)) -eq 0 ] && [ "$BUSY" = 0 ]; then
+              mark "pre-meter-shot i=$i"
               shot /tmp/meter_now.png 2>/dev/null || true
+              mark "pre-psnr i=$i"
               if [ -f /tmp/meter_prev.png ]; then
                 # Bare ffmpeg froze run 36274232946's loop between iters 5-10 —
                 # this probe first fires at iter 8, inside that window. Bound it.
