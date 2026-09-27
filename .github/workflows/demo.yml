@@ -891,63 +891,106 @@ jobs:
           # shell's start (= step start).
           BUDGET_SELECT=1200   # no new select_bh menu work after 20:00
           BUDGET_LOOP=1800     # demo loop must exit by 30:00 absolute (tail needs ~8min)
-          # Persistent AX server: ONE ax_driver process holds the app's sole
-          # AX connection for the whole run (see the freeze fix note in the
-          # swift source). axd <secs> <cmd> [query] sends one command to the
-          # coproc and reads exactly ONE answer line. An EMPTY answer is a
-          # legitimate answer (cardtext of a mid-transition card) — the FIFO
-          # build (run 36317582214) treated empty-as-failure, killed the
-          # server, and its respawn deadlocked the next call; the coproc is
-          # race-free (bash-owned pipes) and read -t bounds each exchange.
+          # Persistent AX server transport (FIFO v2): ONE ax_driver process
+          # holds the app's sole AX connection for the whole run (see the
+          # freeze fix note in the swift source — per-call connections wedged
+          # the app's AX XPC bridge at loop iter 7-8). bash 3.2 has no coproc
+          # (bb4307e died "Bad file descriptor"), so commands travel through
+          # a FIFO whose writer end (fd 3) stays open for the whole run —
+          # closing it would EOF-kill the server; answers come back on the
+          # server's stdout into a staging file that the reader publishes by
+          # ATOMIC RENAME (a half-written file can never masquerade as an
+          # empty answer). axd <secs> <cmd> [query] prints exactly ONE answer
+          # line; an EMPTY answer is legitimate (mid-transition cardtext), so
+          # success = the staging file EXISTS (v1's empty-as-failure check
+          # wedged run 36317582214). Every blocking path is a bounded poll,
+          # FIFO writes run in disposable subshells (a dead reader can only
+          # SIGPIPE a subshell, never the main shell), and every timeout ends
+          # in kill+respawn — fd 3 cannot go stale across calls.
+          AXFIFO=/tmp/ax_server.fifo
+          AXANS=/tmp/ax_server.ans
+          AXSRV_PID=""
           AXSRV_ON=0
+          ax_kill() {
+            local pp="$AXSRV_PID"
+            AXSRV_ON=0
+            AXSRV_PID=""
+            if [ -n "$pp" ]; then
+              pkill -9 -P "$pp" 2>/dev/null || true
+              kill -9 "$pp" 2>/dev/null || true
+              wait "$pp" 2>/dev/null || true
+            fi
+            pkill -9 -x ax_driver 2>/dev/null || true
+            rm -f "$AXANS" 2>/dev/null || true
+            return 0
+          }
+          ax_send() {  # ax_send <line>: bounded FIFO write from a subshell
+            # >/dev/null matters: every call site captures axd with $(...),
+            # and a child that inherits the substitution's stdout pipe keeps
+            # it open forever — the substitution then waits for EOF that
+            # never comes (proven: T3 hung without this, passed with it).
+            ( printf '%s\n' "$1" >&3 2>/dev/null ) >/dev/null 2>&1 &
+            local wp=$! n=0
+            while kill -0 "$wp" 2>/dev/null && [ "$n" -lt 10 ]; do
+              sleep 0.1; n=$((n+1))
+            done
+            kill -9 "$wp" 2>/dev/null || true
+            wait "$wp" 2>/dev/null || true
+            return 0
+          }
           ax_start() {
-            coproc AXSRV { /tmp/ax_driver server 2>/dev/null; }
+            ax_kill
+            if [ ! -p "$AXFIFO" ]; then mkfifo "$AXFIFO" 2>/dev/null || true; fi
+            # The pipeline's read-open pends on the FIFO; the exec 3> below
+            # pends on the writer side — the kernel pairs the two pending
+            # opens, so neither side can deadlock with the other. The
+            # >/dev/null is load-bearing (see ax_send): without it the
+            # server pipeline holds every $(axd ...) substitution's stdout
+            # open and the step hangs forever.
+            ( /tmp/ax_driver server <"$AXFIFO" 2>/dev/null | while IFS= read -r l; do printf '%s\n' "$l" >"$AXANS.tmp" 2>/dev/null && mv -f "$AXANS.tmp" "$AXANS" 2>/dev/null || true; done ) >/dev/null 2>&1 &
+            AXSRV_PID=$!
             AXSRV_ON=1
-            printf 'ping\n' >&"${AXSRV[1]}"
-            local a=""
-            read -t 5 -r a <&"${AXSRV[0]}" || true
+            exec 3>"$AXFIFO" 2>/dev/null || { ax_kill; return 1; }
+            ax_send ping
+            local n=0 a=""
+            while [ ! -f "$AXANS" ] && [ "$n" -lt 25 ]; do sleep 0.2; n=$((n+1)); done
+            if [ -f "$AXANS" ]; then a=$(cat "$AXANS" 2>/dev/null || true); fi
+            rm -f "$AXANS" 2>/dev/null || true
             if [ "$a" != "PONG" ]; then
               ax_kill
-              AXSRV_ON=0
+              return 1
             fi
-          }
-          ax_kill() {
-            AXSRV_ON=0
-            kill -9 "${AXSRV_PID}" 2>/dev/null || true
-            pkill -9 -x ax_driver 2>/dev/null || true
-            wait "${AXSRV_PID}" 2>/dev/null || true
+            return 0
           }
           axd() {  # axd <secs> <cmd> [query]
             local secs=$1; shift
-            local a=""
-            if [ "$AXSRV_ON" = 1 ]; then
-              printf '%s\n' "$*" >&"${AXSRV[1]}" 2>/dev/null || { ax_kill; }
-              if [ "$AXSRV_ON" = 1 ]; then
-                if read -t "$secs" -r a <&"${AXSRV[0]}"; then
-                  printf '%s\n' "$a"    # empty line is a valid answer
-                  return 0
-                fi
-                # Timed out: the server is wedged — kill it and fall through
-                # to the one-shot fallback for THIS call, then respawn next.
-                ax_kill
-                echo AX-SERVER-RESPAWN
-              fi
-            else
+            local a="" n=0
+            if [ "$AXSRV_ON" != 1 ] || ! pgrep -x ax_driver >/dev/null 2>&1; then
               ax_start 2>/dev/null || true
-              if [ "$AXSRV_ON" = 1 ]; then
-                printf '%s\n' "$*" >&"${AXSRV[1]}"
-                if read -t "$secs" -r a <&"${AXSRV[0]}"; then
-                  printf '%s\n' "$a"
-                  return 0
-                fi
-                ax_kill
-                echo AX-SERVER-RESPAWN
+            fi
+            if [ "$AXSRV_ON" = 1 ]; then
+              rm -f "$AXANS" 2>/dev/null || true
+              ax_send "$*"
+              while [ ! -f "$AXANS" ] && [ "$n" -lt $((secs * 5)) ]; do
+                sleep 0.2; n=$((n+1))
+              done
+              if [ -f "$AXANS" ]; then
+                a=$(cat "$AXANS" 2>/dev/null || true)
+                rm -f "$AXANS" 2>/dev/null || true
+                printf '%s\n' "$a"   # empty line is a valid answer
+                return 0
               fi
+              # Timed out: the server is wedged — kill it (this also retires
+              # fd 3, so it cannot go stale) and fall through to the bounded
+              # one-shot fallback for THIS call; the next call respawns.
+              ax_kill
+              echo AX-SERVER-RESPAWN
             fi
             # One-shot fallback (old behavior, bounded).
-            rm -f /tmp/axd.out /tmp/axd.done
+            rm -f /tmp/axd.out /tmp/axd.done 2>/dev/null || true
             ( /tmp/ax_driver "$@" > /tmp/axd.out 2>/dev/null; echo 1 > /tmp/axd.done ) &
-            local p=$! n=0
+            local p=$!
+            n=0
             while [ ! -f /tmp/axd.done ] && [ "$n" -lt $((secs * 2)) ]; do
               sleep 0.5; n=$((n+1))
             done
@@ -957,7 +1000,8 @@ jobs:
             fi
             kill "$p" 2>/dev/null || true
             wait "$p" 2>/dev/null || true
-            if [ -f /tmp/axd.done ]; then cat /tmp/axd.out; else echo AX-TIMEOUT; fi
+            if [ -f /tmp/axd.done ]; then cat /tmp/axd.out 2>/dev/null || true; else echo AX-TIMEOUT; fi
+            return 0
           }
           # Start the server before the first axd user (select_bh).
           ax_start 2>/dev/null || true
