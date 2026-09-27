@@ -893,46 +893,56 @@ jobs:
           BUDGET_LOOP=1800     # demo loop must exit by 30:00 absolute (tail needs ~8min)
           # Persistent AX server: ONE ax_driver process holds the app's sole
           # AX connection for the whole run (see the freeze fix note in the
-          # swift source). axd <secs> <cmd> [query] sends one command to it
-          # and waits for the answer. Command channel: a plain file the
-          # server `tail -f`s is ALSO racy (append truncation); the FIFO is
-          # fine when there is exactly ONE writer who holds it open for the
-          # run — us. We open fd3 once (outside axd), write commands to it,
-          # and read answers from the server's stdout pipe. Server dead or
-          # wedged -> kill + respawn once; still dead -> one-shot fallback.
-          AXFIFO=/tmp/ax_server.fifo
-          AXSRV=""; AXANS=/tmp/ax_server.ans
-          rm -f "$AXFIFO"; mkfifo "$AXFIFO" 2>/dev/null || true
-          ax_ensure_server() {
-            if [ -n "$AXSRV" ] && kill -0 "$AXSRV" 2>/dev/null; then return 0; fi
-            ( /tmp/ax_driver server <"$AXFIFO" 2>/dev/null | while IFS= read -r l; do printf '%s\n' "$l" > "$AXANS"; done ) &
-            AXSRV=$!
-            sleep 1
-            kill -0 "$AXSRV" 2>/dev/null || AXSRV=""
+          # swift source). axd <secs> <cmd> [query] sends one command to the
+          # coproc and reads exactly ONE answer line. An EMPTY answer is a
+          # legitimate answer (cardtext of a mid-transition card) — the FIFO
+          # build (run 36317582214) treated empty-as-failure, killed the
+          # server, and its respawn deadlocked the next call; the coproc is
+          # race-free (bash-owned pipes) and read -t bounds each exchange.
+          AXSRV_ON=0
+          ax_start() {
+            coproc AXSRV { /tmp/ax_driver server 2>/dev/null; }
+            AXSRV_ON=1
+            printf 'ping\n' >&"${AXSRV[1]}"
+            local a=""
+            read -t 5 -r a <&"${AXSRV[0]}" || true
+            if [ "$a" != "PONG" ]; then
+              ax_kill
+              AXSRV_ON=0
+            fi
+          }
+          ax_kill() {
+            AXSRV_ON=0
+            kill -9 "${AXSRV_PID}" 2>/dev/null || true
+            pkill -9 -x ax_driver 2>/dev/null || true
+            wait "${AXSRV_PID}" 2>/dev/null || true
           }
           axd() {  # axd <secs> <cmd> [query]
             local secs=$1; shift
-            local ans
-            ax_ensure_server
-            if [ -n "$AXSRV" ]; then
-              rm -f "$AXANS"
-              printf '%s\n' "$*" >&3    # fd3 held on the FIFO for the whole run
-              local n=0
-              ans=""
-              while [ "$n" -lt $((secs * 5)) ]; do
-                if [ -f "$AXANS" ]; then ans=$(cat "$AXANS" 2>/dev/null); break; fi
-                sleep 0.2; n=$((n+1))
-              done
-              if [ -n "$ans" ]; then
-                printf '%s\n' "$ans"
-                return 0
+            local a=""
+            if [ "$AXSRV_ON" = 1 ]; then
+              printf '%s\n' "$*" >&"${AXSRV[1]}" 2>/dev/null || { ax_kill; }
+              if [ "$AXSRV_ON" = 1 ]; then
+                if read -t "$secs" -r a <&"${AXSRV[0]}"; then
+                  printf '%s\n' "$a"    # empty line is a valid answer
+                  return 0
+                fi
+                # Timed out: the server is wedged — kill it and fall through
+                # to the one-shot fallback for THIS call, then respawn next.
+                ax_kill
+                echo AX-SERVER-RESPAWN
               fi
-              # Wedged or dead: hard respawn once, then fall through to
-              # the one-shot fallback this call.
-              kill -9 "$AXSRV" 2>/dev/null || true
-              pkill -9 -x ax_driver 2>/dev/null || true
-              AXSRV=""
-              echo AX-SERVER-RESPAWN
+            else
+              ax_start 2>/dev/null || true
+              if [ "$AXSRV_ON" = 1 ]; then
+                printf '%s\n' "$*" >&"${AXSRV[1]}"
+                if read -t "$secs" -r a <&"${AXSRV[0]}"; then
+                  printf '%s\n' "$a"
+                  return 0
+                fi
+                ax_kill
+                echo AX-SERVER-RESPAWN
+              fi
             fi
             # One-shot fallback (old behavior, bounded).
             rm -f /tmp/axd.out /tmp/axd.done
@@ -949,11 +959,8 @@ jobs:
             wait "$p" 2>/dev/null || true
             if [ -f /tmp/axd.done ]; then cat /tmp/axd.out; else echo AX-TIMEOUT; fi
           }
-          # One writer, one holder: our shell owns fd3 on the FIFO for the
-          # entire run (defined above). Start the server now; the open
-          # blocks until the server holds the read end.
-          ax_ensure_server
-          exec 3>"$AXFIFO"
+          # Start the server before the first axd user (select_bh).
+          ax_start 2>/dev/null || true
           select_bh() {  # select_bh [ax-press-query] [target-label] [hover-offset] [type-select]
             local Q="${1:-blackhole}" L="${2:-BlackHole 2ch}"
             local HO="${3:-89}" TS="${4:-Blackhole}"
