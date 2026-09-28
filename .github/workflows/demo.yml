@@ -406,6 +406,16 @@ jobs:
           guard args.count >= 2 else { print("USAGE"); exit(0) }
           let mode = args[1]
           let query = args.count > 2 ? args[2].lowercased() : ""
+          // Server mode reuses the same walk for every command; the
+          // collectors below keyed on 'mode' never fired because mode is
+          // always 'server' there — cardtext returned empty and dump printed
+          // only a summary line for the whole run (36473063489: the loop was
+          // blind, select_bh could never see the mic dropdown). The server
+          // sets walkMode per command; dump output is collected into
+          // dumpLines and joined with literal backslash-n so a multi-line tree fits
+          // the one-line-per-command FIFO protocol.
+          var walkMode = mode
+          var dumpLines: [String] = []
 
           func trustedNow() -> Bool {
             let k = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
@@ -464,10 +474,14 @@ jobs:
                 print(trustedNow() ? "YES" : "NO")
               default:
                 hits.removeAll(); texts.removeAll(); visited = 0
+                dumpLines.removeAll()
+                walkMode = cmd   // let the walk collectors fire for this command
                 walk(appEl, 0)
                 switch cmd {
                 case "dump":
-                  print(visited <= 1 ? "EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)" : "DUMP scanned=\(visited)")
+                  // one line per command on the FIFO: encode the tree with
+                  // literal backslash-n; bash decodes with printf %b
+                  print(visited <= 1 ? "EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)" : dumpLines.joined(separator: "\\n"))
                 case "cardtext":
                   print(texts.joined(separator: " ~ ").prefix(1200))
                 case "press", "find":
@@ -558,9 +572,9 @@ jobs:
             let pos = axPoint(el) ?? CGPoint(x: -1, y: -1)
             let size = axSize(el) ?? CGSize(width: -1, height: -1)
             let enabled = axEnabled(el)
-            if mode == "dump" {
+            if walkMode == "dump" {
               let ind = String(repeating: "  ", count: min(depth, 10))
-              print("\(ind)\(role) [\(enabled ? "on" : "off")] '\(label)' @ \(Int(pos.x)),\(Int(pos.y)) \(Int(size.width))x\(Int(size.height))")
+              dumpLines.append("\(ind)\(role) [\(enabled ? "on" : "off")] '\(label)' @ \(Int(pos.x)),\(Int(pos.y)) \(Int(size.width))x\(Int(size.height))")
             }
             if !query.isEmpty,
                role == "AXButton" || role == "AXLink" || role == "AXMenuItem"
@@ -570,7 +584,7 @@ jobs:
                                 pos: pos, size: size, enabled: enabled))
               }
             }
-            if mode == "cardtext", !label.isEmpty, pos.y >= 31, size.height > 0,
+            if walkMode == "cardtext", !label.isEmpty, pos.y >= 31, size.height > 0,
                role == "AXStaticText" || role == "AXButton" || role == "AXMenuButton"
                || role == "AXTextField" || role == "AXTextArea" {
               texts.append(label.lowercased())
@@ -581,7 +595,7 @@ jobs:
           walk(appEl, 0)
           switch mode {
           case "dump":
-            if visited <= 1 { print("EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)") }
+            if visited <= 1 { print("EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)") } else { print(dumpLines.joined(separator: "\n")) }
           case "cardtext":
             print(texts.joined(separator: " ~ ").prefix(1200))
           case "press", "find":
@@ -1005,6 +1019,12 @@ jobs:
           }
           # Start the server before the first axd user (select_bh).
           ax_start 2>/dev/null || true
+          axdump() {  # axdump <secs>: tree dump with the server's literal \n escapes decoded
+            local s=""
+            s=$(axd "${1:-5}" dump 2>/dev/null || true)
+            printf '%b' "$s"
+          }
+
           select_bh() {  # select_bh [ax-press-query] [target-label] [hover-offset] [type-select]
             local Q="${1:-blackhole}" L="${2:-BlackHole 2ch}"
             local HO="${3:-89}" TS="${4:-Blackhole}"
@@ -1013,7 +1033,7 @@ jobs:
               echo "select_bh skipped (time budget ${SECONDS}s)"; return 1
             fi
             # Idempotent: already on the target -> nothing to do.
-            if axd 4 dump 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
+            if axdump 4 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
               echo "dropdown already on $L"; return 0
             fi
             for t in 1 2 3; do
@@ -1024,7 +1044,7 @@ jobs:
               sleep 1
               # POSIX ERE (-E): the old BRE \| alternation is GNU-only — BSD
               # grep treats it literally, so the locate never matched.
-              LINE=$(axd 5 dump 2>/dev/null | grep -E "AXMenuButton \[on\] '(Apple Virtual Sound Device|BlackHole 2ch)'" | head -1)
+              LINE=$(axdump 5 2>/dev/null | grep -E "AXMenuButton \[on\] '(Apple Virtual Sound Device|BlackHole 2ch)'" | head -1)
               BX=$(printf '%s' "$LINE" | awk '{gsub(/.*@ /,""); print $1}' | cut -d, -f1)
               BY=$(printf '%s' "$LINE" | awk '{gsub(/.*@ /,""); print $1}' | cut -d, -f2)
               if [ -z "$BX" ]; then
@@ -1044,7 +1064,7 @@ jobs:
               R=$(axd 6 press "$Q" 2>/dev/null || echo DRIVER-ERROR)
               echo "bh try $t axpress -> $R"
               cl kp:esc || true; sleep 1  # close immediately, then verify
-              if axd 4 dump 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
+              if axdump 4 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
                 echo "dropdown verified: $L selected (try $t axpress)"; return 0
               fi
               cl c:$BX,$BY || true; sleep 1
@@ -1052,7 +1072,7 @@ jobs:
               sleep 1
               cl kp:return || true            # Return selects highlighted row
               cl kp:esc || true; sleep 1      # menu closes itself on select; esc harmless
-              if axd 4 dump 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
+              if axdump 4 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
                 echo "dropdown verified: $L selected (try $t hover+return)"; return 0
               fi
               cl c:$BX,$BY || true; sleep 1
@@ -1060,7 +1080,7 @@ jobs:
               sleep 1
               cl kp:return || true
               cl kp:esc || true; sleep 1
-              if axd 4 dump 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
+              if axdump 4 2>/dev/null | grep -q "AXMenuButton.*'$L'"; then
                 echo "dropdown verified: $L selected (try $t typeselect)"; return 0
               fi
             done
@@ -1147,22 +1167,13 @@ jobs:
             tail -6 /tmp/probe.err 2>/dev/null || true
           fi
           echo "feeding the demo clips and driving the demo steps..."
-          # FREEZE BISECT round 2 (run 36315053247: recorders off, STILL froze
-          # at T+775, i.e. ~60s after self-test+loop start — the same offset
-          # as run 36314125991). Remaining loop-start newcomer: this feeder
-          # (afplay through BlackHole round-robin). DISABLED this run — the
-          # gesture blocks still play their own clips on demand. If the loop
-          # survives past T+900 now, afplay->coreaudiod->BlackHole was the
-          # wedge; if it still freezes, the app/AX/pixel stack is next.
-          CLIPS=""
-          echo "BISECT: round-robin feeder disabled this run (CLIPS unset)"
-          # ( for r in 1 2 3 4 5 6 7 8; do
-          #     for f in clip name draw circle dictate; do
-          #       afplay "$HOME/$f.aiff" 2>/dev/null || true
-          #       sleep 15
-          #     done
-          #   done ) &
-          # CLIPS=$!
+          ( for r in 1 2 3 4 5 6 7 8; do
+              for f in clip name draw circle dictate; do
+                afplay "$HOME/$f.aiff" 2>/dev/null || true
+                sleep 15
+              done
+            done ) &
+          CLIPS=$!
           advanced=0; idleStreak=0; lastXY=""; sameCount=0
           bhTries=0; lastBhIter=-100; toggleTries=0
           LASTSTEP=0; gestureFires=0; lastGestureIter=-100
