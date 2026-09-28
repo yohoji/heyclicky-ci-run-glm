@@ -783,6 +783,16 @@ jobs:
           sa -t input  -s "BlackHole 2ch" || true
           sa -t output -s "BlackHole 2ch" || true
           echo "pre-launch audio: $(sa -c 2>/dev/null || echo unknown)"
+          # Seed the session DIRECTLY: SupabaseAuthManager persists
+          # supabaseAccessToken/supabaseRefreshToken in NSUserDefaults and
+          # recovers the cached session at launch ("Auth recovery failed;
+          # keeping cached Supabase session..." in the binary strings). This
+          # bypasses LaunchServices entirely — the last two runs lost the
+          # clicky:// callback to scheme-handler routing and never signed
+          # in. The clicky:// fires below remain as belt-and-suspenders.
+          defaults write com.humansongs.clicky supabaseAccessToken "$AT"
+          defaults write com.humansongs.clicky supabaseRefreshToken "$RT"
+          defaults read com.humansongs.clicky supabaseAccessToken >/dev/null 2>&1 && echo "session seeded (AT len ${#AT})" || echo "WARN: session seed write failed"
           opn "$HOME/HeyClicky.app"
           sleep 18
           { set +x; } 2>/dev/null
@@ -833,6 +843,8 @@ jobs:
           fi
           if [ "$AUTHED" != 1 ]; then
             echo "FATAL: the app never signed in after 8 token-callback fires"
+            shot evidence/shots/auth-failed.png 2>/dev/null || true
+            run_to 30 /tmp/ax_driver dump > evidence/ax-tree-auth-failed.log 2>/dev/null || true
             hb "auth FAILED after retries — failing fast (evidence uploads via always())"
             exit 1
           fi
