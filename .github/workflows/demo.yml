@@ -805,20 +805,37 @@ jobs:
             sleep 3
           done
           if [ "$AUTHED" != 1 ]; then
-            # The first callback can be lost if it races the app's URL-scheme
-            # registration right after launch. Re-fire it once before giving up.
-            echo "auth not confirmed yet; re-firing the token callback once"
+            # The first callback can be lost when LaunchServices hands the
+            # clicky:// URL to Safari instead of the app (scheme-handler
+            # registration races the app's first launch — 36484777078 fired
+            # once, missed, and the whole run derailed on the
+            # unauthenticated welcome card). Re-fire up to 7 more times,
+            # alternating plain scheme opens with direct bundle-id
+            # targeting, and FAIL the step outright if the app never signs
+            # in: Logs/Upload still run (if: always()), and a garbage
+            # 50-minute blind run helps nobody.
             { set +x; } 2>/dev/null
-            opn "clicky://auth-callback#access_token=${AT}&refresh_token=${RT}&expires_in=3600&token_type=bearer"
-            set -x
-            for i in $(seq 1 20); do
-              if lsafe --predicate 'subsystem == "com.humansongs.clicky"' --info --debug --last 40s 2>/dev/null | grep -qiE "authenticated as|signed in"; then
-                echo "auth confirmed on retry after ~$((i*3))s"; AUTHED=1; break
-              fi
-              sleep 3
+            for f in 2 3 4 5 6 7 8; do
+              echo "auth not confirmed; re-firing token callback (try $f/8)"
+              case $((f % 3)) in
+                0) opn -b com.humansongs.clicky "clicky://auth-callback#access_token=${AT}&refresh_token=${RT}&expires_in=3600&token_type=bearer" || true ;;
+                *) opn "clicky://auth-callback#access_token=${AT}&refresh_token=${RT}&expires_in=3600&token_type=bearer" || true ;;
+              esac
+              for i in $(seq 1 7); do
+                if lsafe --predicate 'subsystem == "com.humansongs.clicky"' --info --debug --last 40s 2>/dev/null | grep -qiE "authenticated as|signed in"; then
+                  echo "auth confirmed on try $f after ~$((i*3))s"; AUTHED=1; break
+                fi
+                sleep 3
+              done
+              [ "$AUTHED" = 1 ] && break
             done
+            set -x
           fi
-          [ "$AUTHED" = 1 ] || echo "WARN: auth marker not seen after retry; proceeding anyway"
+          if [ "$AUTHED" != 1 ]; then
+            echo "FATAL: the app never signed in after 8 token-callback fires"
+            hb "auth FAILED after retries — failing fast (evidence uploads via always())"
+            exit 1
+          fi
           hb "auth done (AUTHED=$AUTHED)"
           sleep 12   # let the post-sign-in survey render and settle
           shot evidence/shots/00-start.png 2>/dev/null || true
