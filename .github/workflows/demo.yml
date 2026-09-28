@@ -372,7 +372,37 @@ jobs:
             if cxf < 0.35 || cxf > 0.65 { return nil } // off-centre => a macOS notification banner, not a TCC prompt
             return fmt(xlo + 0.73 * (xhi - xlo), ylo + 0.86 * (yhi - ylo))   // Allow: right-of-centre, near bottom
           }
+          // whitebtn: the demo card's ENABLED Continue — a near-white rounded
+          // button low in the card, on a dark card face. A disabled Continue
+          // is grey (~140) and never passes the 230 gate; the white caption
+          // bubble and mic dropdown sit ABOVE the scan band. The band is
+          // fully inside the dark card (x 0.35-0.65 W, y 0.72-0.83 H), so
+          // the white Gmail page behind the card cannot leak in.
+          func whitebtnTarget() -> String? {
+            let y0 = Int(Double(H) * 0.72), y1 = Int(Double(H) * 0.83)
+            let x0 = Int(Double(W) * 0.35), x1 = Int(Double(W) * 0.65)
+            var pxs = [Int](); var pys = [Int]()
+            var y = y0
+            while y < y1 {
+              var x = x0
+              while x < x1 {
+                let (r, g, b) = rgb(x, y)
+                if r > 230 && g > 230 && b > 230 { pxs.append(x); pys.append(y) }
+                x += 2
+              }
+              y += 2
+            }
+            // ~109x40 button sampled on a 2x2 grid -> ~550 samples; the
+            // wandering cursor triangle and stray text never reach that.
+            if pxs.count < 400 { return nil }
+            let xlo = pxs.min()!, xhi = pxs.max()!, ylo = pys.min()!, yhi = pys.max()!
+            // sanity: blob shape ~button, not a sliver of page
+            if Double(xhi - xlo) * sx < 60 || Double(yhi - ylo) * sy < 18 { return nil }
+            if Double(xhi - xlo) * sx > 260 || Double(yhi - ylo) * sy > 90 { return nil }
+            return fmt(Double(pxs.reduce(0, +)) / Double(pxs.count), Double(pys.reduce(0, +)) / Double(pys.count))
+          }
           switch mode {
+          case "whitebtn": print(whitebtnTarget() ?? "NONE")
           case "blue":  print(blueTarget() ?? "NONE")
           case "allow": print(dialogTarget(800) ?? "NONE")
           case "showme": print(showmeTarget() ?? "NONE")
@@ -1176,7 +1206,7 @@ jobs:
           CLIPS=$!
           advanced=0; idleStreak=0; lastXY=""; sameCount=0
           bhTries=0; lastBhIter=-100; toggleTries=0
-          LASTSTEP=0; gestureFires=0; lastGestureIter=-100
+          LASTSTEP=0; gestureFires=0; lastGestureIter=-100; pressFails=0
           for i in $(seq 1 60); do
             if [ "$SECONDS" -gt "$BUDGET_LOOP" ]; then
               echo "TIME BUDGET reached at iter $i — exiting to preserve logs+evidence"
@@ -1204,7 +1234,7 @@ jobs:
             if [ $((i % 5)) -eq 0 ]; then hb "loop iter $i step=$STEPNO busy=$BUSY advanced=$advanced"; else echo "$(date -u +%H:%M:%SZ) T+${SECONDS}s iter=$i step=$STEPNO busy=$BUSY advanced=$advanced" >> /tmp/prog/progress.txt; fi
             if [ "$STEPNO" != "$LASTSTEP" ]; then
               echo "demo: now on step $STEPNO"
-              LASTSTEP=$STEPNO; gestureFires=0; lastGestureIter=-100
+              LASTSTEP=$STEPNO; gestureFires=0; lastGestureIter=-100; pressFails=0
               # The round-robin feeder exists for step 1's passive mic test;
               # after that the gesture blocks play their own clips on demand
               # and the feeder only spams the app's mic mid-response.
@@ -1230,8 +1260,24 @@ jobs:
                 AR=$(axd 6 press "$q" 2>/dev/null || echo DRIVER-ERROR)
                 echo "ax demo iter $i q=$q -> $AR"
                 case "$AR" in
-                  PRESSED*|CLICKED*) ax_handled=1; break ;;
-                  *PRESS-FAILED*) break ;;        # found but disabled — wait for live bars
+                  PRESSED*|CLICKED*) ax_handled=1; pressFails=0; break ;;
+                  *PRESS-FAILED*)
+                    # Stale-AX guard (36477156349): the persistent AX
+                    # connection serves cached attributes — the step-1
+                    # Continue sat ENABLED (white, pixel-proven) for 40+
+                    # iters while AX kept reporting enabled=false. Only
+                    # click when the whitebtn pixel detector PROVES the
+                    # button is lit (a disabled one is grey); never blind.
+                    pressFails=$((pressFails+1))
+                    if [ "$pressFails" -ge 2 ]; then
+                      run_to 8 screencapture -x /tmp/wb.png 2>/dev/null || true
+                      WXY=$(run_to 20 /tmp/find_target /tmp/wb.png whitebtn 2>/dev/null || echo NONE)
+                      echo "stale-AX pressFails=$pressFails whitebtn -> $WXY"
+                      case "$WXY" in
+                        *,*) cl c:${WXY%,*},${WXY#*,} || true; ax_handled=1; pressFails=0; break ;;
+                      esac
+                    fi
+                    break ;;
                   NOTFOUND*) continue ;;
                   *) break ;;
                 esac
