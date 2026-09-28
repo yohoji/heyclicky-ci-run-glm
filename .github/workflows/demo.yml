@@ -474,6 +474,22 @@ jobs:
             print("DTAP-SENT")
             exit(0)
           }
+          if mode == "mod" {
+            // Hold/clear the Control+Option combo from this TCC-trusted
+            // process. cliclick kd/ku posts the same CGEvents but cliclick
+            // itself has no Accessibility row on the Tahoe runners — the
+            // app's 'control key'/'option key' pills never lit and no
+            // listening happened (36481133890 step 2: four hold+name
+            // fires, zero effect).
+            let down = args.count > 2 ? args[2].lowercased() == "down" : true
+            if let e = CGEvent(keyboardEventSource: nil, virtualKey: 59, keyDown: down) {
+              e.type = .flagsChanged
+              e.flags = down ? [.maskControl, .maskAlternate] : []
+              e.post(tap: .cghidEventTap)
+            }
+            print(down ? "MOD-DOWN" : "MOD-UP")
+            exit(0)
+          }
 
           let apps = NSRunningApplication.runningApplications(
             withBundleIdentifier: "com.humansongs.clicky")
@@ -1207,7 +1223,7 @@ jobs:
           advanced=0; idleStreak=0; lastXY=""; sameCount=0
           bhTries=0; lastBhIter=-100; toggleTries=0
           LASTSTEP=0; gestureFires=0; lastGestureIter=-100; pressFails=0
-          for i in $(seq 1 60); do
+          for i in $(seq 1 90); do
             if [ "$SECONDS" -gt "$BUDGET_LOOP" ]; then
               echo "TIME BUDGET reached at iter $i — exiting to preserve logs+evidence"
               break
@@ -1307,11 +1323,11 @@ jobs:
                   if [ "$gestureFires" -lt 4 ] && [ $((i - lastGestureIter)) -ge 4 ]; then
                     gestureFires=$((gestureFires+1)); lastGestureIter=$i
                     ( afplay "$HOME/circle.aiff" 2>/dev/null || true ) &
-                    cl kd:ctrl,alt || true
+                    run_to 12 /tmp/ax_driver mod down || true
                     sleep 2
                     cl dd:512,305 w:50 dm:572,330 dm:597,390 dm:572,450 dm:512,475 dm:452,450 dm:427,390 dm:452,330 dm:512,305 du: || true
                     sleep 3
-                    cl ku:ctrl,alt || true
+                    run_to 12 /tmp/ax_driver mod up || true
                     echo "demo gesture iter $i: hold+circle+ask (${TXT:0:100})"
                   fi ;;
                 *"draw"*)
@@ -1319,9 +1335,9 @@ jobs:
                   if [ "$gestureFires" -lt 4 ] && [ $((i - lastGestureIter)) -ge 4 ]; then
                     gestureFires=$((gestureFires+1)); lastGestureIter=$i
                     ( afplay "$HOME/draw.aiff" 2>/dev/null || true ) &
-                    cl kd:ctrl,alt || true
+                    run_to 12 /tmp/ax_driver mod down || true
                     sleep 8
-                    cl ku:ctrl,alt || true
+                    run_to 12 /tmp/ax_driver mod up || true
                     echo "demo gesture iter $i: hold+ask-to-draw (${TXT:0:100})"
                   fi ;;
                 *"double-tap"*|*"not in the mood"*|*"words land here"*)
@@ -1372,9 +1388,9 @@ jobs:
                     CLIP="$HOME/name.aiff"
                     case "$TXT" in *"dictat"*) CLIP="$HOME/dictate.aiff" ;; esac
                     ( afplay "$CLIP" 2>/dev/null || true ) &
-                    cl kd:ctrl,alt || true
+                    run_to 12 /tmp/ax_driver mod down || true
                     sleep 8
-                    cl ku:ctrl,alt || true
+                    run_to 12 /tmp/ax_driver mod up || true
                     echo "demo gesture iter $i: hold-to-talk (${TXT:0:100})"
                   fi ;;
                 *"apple virtual sound device"*|*"null audio device"*)
