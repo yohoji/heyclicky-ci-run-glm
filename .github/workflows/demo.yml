@@ -486,17 +486,28 @@ jobs:
             exit(0)
           }
           if mode == "mod" {
-            // Hold/clear the Control+Option combo from this TCC-trusted
-            // process. cliclick kd/ku posts the same CGEvents but cliclick
-            // itself has no Accessibility row on the Tahoe runners — the
-            // app's 'control key'/'option key' pills never lit and no
-            // listening happened (36481133890 step 2: four hold+name
-            // fires, zero effect).
+            // Hold/clear Control+Option from this TCC-trusted process, as
+            // TWO per-key flagsChanged events in physical order. The app's
+            // hold detector tracks modifier state PER KEYCODE (same family
+            // as the double-tap detector in doubles.c): one combined event
+            // carrying both masks never registered Option as down and the
+            // pills stayed unlit (36492772435 step 2, four trusted fires).
             let down = args.count > 2 ? args[2].lowercased() == "down" : true
-            if let e = CGEvent(keyboardEventSource: nil, virtualKey: 59, keyDown: down) {
-              e.type = .flagsChanged
-              e.flags = down ? [.maskControl, .maskAlternate] : []
-              e.post(tap: .cghidEventTap)
+            func fl(_ key: Int, _ flags: CGEventFlags) {
+              if let e = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true) {
+                e.type = .flagsChanged
+                e.flags = flags
+                e.post(tap: .cghidEventTap)
+              }
+            }
+            if down {
+              fl(59, [.maskControl])                       // Control down
+              usleep(60_000)
+              fl(58, [.maskControl, .maskAlternate])       // Option down
+            } else {
+              fl(58, [.maskControl])                       // Option up
+              usleep(60_000)
+              fl(59, [])                                   // Control up
             }
             print(down ? "MOD-DOWN" : "MOD-UP")
             exit(0)
