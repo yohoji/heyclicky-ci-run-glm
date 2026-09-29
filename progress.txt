@@ -6,3 +6,8 @@
 12:20:57Z T+238s: showme done (ax_ok=1)
 12:21:15Z T+256s: device selection done
 12:21:15Z T+256s: self-test done (BH=0 AVSD=0)
+12:21:15Z T+256s iter=1 step=1 busy=0 advanced=0
+12:21:22Z T+263s iter=2 step=1 busy=0 advanced=0
+12:21:29Z T+270s iter=3 step=1 busy=0 advanced=0
+12:21:36Z T+277s iter=4 step=2 busy=0 advanced=1
+12:21:55Z T+296s: loop iter 5 step=2 busy=1 advanced=1
