@@ -1287,7 +1287,7 @@ jobs:
           CLIPS=$!
           advanced=0; idleStreak=0; lastXY=""; sameCount=0
           bhTries=0; lastBhIter=-100; toggleTries=0
-          LASTSTEP=0; gestureFires=0; lastGestureIter=-100; pressFails=0; emptyStreak=0
+          LASTSTEP=0; gestureFires=0; lastGestureIter=-100; pressFails=0; emptyStreak=0; nfStreak=0
           for i in $(seq 1 90); do
             if [ "$SECONDS" -gt "$BUDGET_LOOP" ]; then
               echo "TIME BUDGET reached at iter $i — exiting to preserve logs+evidence"
@@ -1376,6 +1376,25 @@ jobs:
                   *) break ;;
                 esac
               done
+              # Stale-NOTFOUND guard (36540287790): the press queries kept
+              # returning NOTFOUND while the card's Continue sat ENABLED
+              # (white, pixel-proven) for 45 iters — the server tree simply
+              # does not expose the button role. Pixel-prove and click the
+              # lit button; only an ENABLED button passes the white gate,
+              # so this can never skip a step.
+              if [ "$ax_handled" != 1 ] && [ "$STEPNO" -ge 1 ]; then
+                nfStreak=$((nfStreak+1))
+                if [ "$nfStreak" -ge 3 ]; then
+                  run_to 8 screencapture -x /tmp/wb.png 2>/dev/null || true
+                  WXY=$(run_to 20 /tmp/find_target /tmp/wb.png whitebtn 2>/dev/null || echo NONE)
+                  echo "stale-NOTFOUND nf=$nfStreak whitebtn -> $WXY"
+                  case "$WXY" in
+                    *,*) cl c:${WXY%,*},${WXY#*,} || true; ax_handled=1; nfStreak=0 ;;
+                  esac
+                fi
+              else
+                [ "$ax_handled" = 1 ] && nfStreak=0 || true
+              fi
             fi
             if [ "$ax_handled" = 1 ]; then
               advanced=$((advanced+1)); idleStreak=0; lastXY=""; sameCount=0
