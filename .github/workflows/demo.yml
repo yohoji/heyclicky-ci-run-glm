@@ -797,6 +797,8 @@ jobs:
           AVVID=""; AVAUD=""
           echo "BISECT: avfoundation recorders disabled this run (AVVID/AVAUD unset)"
           # Live app-log stream (log show's window kept missing the moment).
+          # Started BEFORE the launch so the launch-time session recovery is
+          # captured (the auth-failed fail path copies this file out).
           log stream --style compact --predicate 'processImagePath CONTAINS "HeyClicky"' > /tmp/app-stream.log 2>&1 &
           APPLOG=$!
           # Set the audio route BEFORE the app launches: the demo engine caches
@@ -812,6 +814,12 @@ jobs:
           # bypasses LaunchServices entirely — the last two runs lost the
           # clicky:// callback to scheme-handler routing and never signed
           # in. The clicky:// fires below remain as belt-and-suspenders.
+          # Force LaunchServices to register the app NOW (its clicky:// URL
+          # scheme otherwise races the handler registration — some VMs hand
+          # every callback to Safari instead).
+          LSR="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+          run_to 30 "$LSR" -f "$HOME/HeyClicky.app" 2>/dev/null || true
+          echo "lsregister done"
           defaults write com.humansongs.clicky supabaseAccessToken "$AT"
           defaults write com.humansongs.clicky supabaseRefreshToken "$RT"
           defaults read com.humansongs.clicky supabaseAccessToken >/dev/null 2>&1 && echo "session seeded (AT len ${#AT})" || echo "WARN: session seed write failed"
@@ -867,6 +875,10 @@ jobs:
             echo "FATAL: the app never signed in after 8 token-callback fires"
             shot evidence/shots/auth-failed.png 2>/dev/null || true
             run_to 30 /tmp/ax_driver dump > evidence/ax-tree-auth-failed.log 2>/dev/null || true
+            cp /tmp/app-stream.log evidence/app-auth-failed.log 2>/dev/null || true
+            { echo "--- defaults domain (auth keys) ---"
+              defaults read com.humansongs.clicky 2>/dev/null | grep -iE "supabase|token|session" || echo "(domain unreadable or keys gone)"
+            } > evidence/defaults-auth-failed.log 2>&1 || true
             hb "auth FAILED after retries — failing fast (evidence uploads via always())"
             exit 1
           fi
