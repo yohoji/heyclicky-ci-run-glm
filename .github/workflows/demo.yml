@@ -493,7 +493,7 @@ jobs:
             // carrying both masks never registered Option as down and the
             // pills stayed unlit (36492772435 step 2, four trusted fires).
             let down = args.count > 2 ? args[2].lowercased() == "down" : true
-            func fl(_ key: Int, _ flags: CGEventFlags) {
+            func fl(_ key: CGKeyCode, _ flags: CGEventFlags) {
               if let e = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true) {
                 e.type = .flagsChanged
                 e.flags = flags
@@ -772,7 +772,9 @@ jobs:
             echo "AX trusted: $(run_to 20 /tmp/ax_driver trusted 2>/dev/null || echo no-driver)"
           else
             cat /tmp/axc.log || true
-            echo "AX driver build FAILED; pixel fallback only"
+            echo "FATAL: ax_driver build FAILED — presses/dumps/holds/step-detection are all dead; failing fast instead of burning the run blind"
+            hb "ax_driver build FAILED — fail fast"
+            exit 1
           fi
           # ---- FULL-RUN screen recording (frame burst) ---------------------
           # Record the ENTIRE run by bursting screenshots (shot can
