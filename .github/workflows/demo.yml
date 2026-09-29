@@ -828,8 +828,18 @@ jobs:
           opn "$HOME/HeyClicky.app"
           sleep 18
           { set +x; } 2>/dev/null
-          opn "clicky://auth-callback#access_token=${AT}&refresh_token=${RT}&expires_in=3600&token_type=bearer"
+          opn "clicky://auth-callback#access_token=${CURAT}&refresh_token=${CURRT}&expires_in=3600&token_type=bearer"
           set -x
+          # The app may ROTATE the seeded refresh token during its launch-time
+            # recovery; firing the callback with our stale secret pair then
+            # lands on refresh_token_already_used and the app WIPES its
+            # session (36495491402 / 36544001329: keys gone at fail time).
+          curpair() {
+            CURAT=$(defaults read com.humansongs.clicky supabaseAccessToken 2>/dev/null || echo "$AT")
+            CURRT=$(defaults read com.humansongs.clicky supabaseRefreshToken 2>/dev/null || echo "$RT")
+            [ -n "$CURAT" ] || CURAT="$AT"; [ -n "$CURRT" ] || CURRT="$RT"
+          }
+          curpair
           # AUTH GATE: do not click until the injected session has actually signed
           # the app in. Otherwise the first clicks land on the "Sign in with
           # Google" button, the app opens browser OAuth, and onboarding derails.
@@ -859,9 +869,10 @@ jobs:
             { set +x; } 2>/dev/null
             for f in 2 3 4 5 6 7 8; do
               echo "auth not confirmed; re-firing token callback (try $f/8)"
+              curpair   # the app may have rotated the pair since the last fire
               case $((f % 3)) in
-                0) opn -b com.humansongs.clicky "clicky://auth-callback#access_token=${AT}&refresh_token=${RT}&expires_in=3600&token_type=bearer" || true ;;
-                *) opn "clicky://auth-callback#access_token=${AT}&refresh_token=${RT}&expires_in=3600&token_type=bearer" || true ;;
+                0) opn -b com.humansongs.clicky "clicky://auth-callback#access_token=${CURAT}&refresh_token=${CURRT}&expires_in=3600&token_type=bearer" || true ;;
+                *) opn "clicky://auth-callback#access_token=${CURAT}&refresh_token=${CURRT}&expires_in=3600&token_type=bearer" || true ;;
               esac
               for i in $(seq 1 7); do
                 if lsafe --predicate 'subsystem == "com.humansongs.clicky"' --info --debug --last 40s 2>/dev/null | grep -qiE "authenticated as|signed in"; then
