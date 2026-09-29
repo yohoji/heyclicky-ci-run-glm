@@ -835,46 +835,14 @@ jobs:
           # supabaseAccessToken/supabaseRefreshToken, per the decompiled
           # SecItem queries). Seed the keychain directly; -T trusts the app
           # at creation so SecItemCopyMatching never shows a prompt.
-          # Run 36550893041 SMOKING GUN: the login keychain is LOCKED on some
-          # VMs — the seed read blocked 15s on an "enter the login keychain
-          # password" prompt that stayed up for minutes, and the app's own
-          # SecItem reads/writes hang behind the same prompt, so it can never
-          # authenticate. Stop touching the login keychain entirely: create
-          # our own keychain, unlock it (we hold the password), make it the
-          # DEFAULT (so the app's own SecItemAdd lands there) and seed the
-          # token pair into it with the app in the item ACL (-T).
-          # 36552780580: create-keychain used a RELATIVE path (workspace),
-          # while default/search-list/seed pointed at ~/Library/Keychains/
-          # clicky-ci.keychain — a ghost. Absolute paths everywhere now,
-          # and the read-back shows its stderr so a silent failure can
-          # never hide again.
-          KCURL="$HOME/Library/Keychains/clicky-ci.keychain-db"
-          KCRAW="$HOME/Library/Keychains/clicky-ci.keychain"
-          rm -f "$KCRAW" "$KCURL" 2>/dev/null || true
-          run_to 15 security create-keychain -p clicky-ci "$KCRAW" >/tmp/kc-create.log 2>&1 || cat /tmp/kc-create.log
-          run_to 10 security unlock-keychain -p clicky-ci "$KCRAW" >/tmp/kc-unlock.log 2>&1 || cat /tmp/kc-unlock.log
-          run_to 10 security set-keychain-settings -t 86400 "$KCRAW" >/dev/null 2>&1 || true
-          run_to 10 security default-keychain -s "$KCRAW" >/tmp/kc-default.log 2>&1 || cat /tmp/kc-default.log
-          run_to 10 security list-keychain -d user -s "$KCRAW" "$HOME/Library/Keychains/login.keychain-db" >/tmp/kc-list.log 2>&1 || cat /tmp/kc-list.log
-          echo "default keychain: $(run_to 10 security default-keychain 2>/dev/null)"
-          echo "search list: $(run_to 10 security list-keychain -d user 2>/dev/null | tr -d \n)"
-          kcseed() {  # kcseed <account> <value>
-            run_to 15 security add-generic-password -s com.humansongs.clicky -a "$1" -w "$2" -T "$HOME/HeyClicky.app" -U "$KCRAW" >"/tmp/kc-$1.log" 2>&1 \
-              || { echo "keychain seed failed ($1):"; cat "/tmp/kc-$1.log"; }
-          }
-          kcseed supabaseAccessToken "$AT"
-          kcseed supabaseRefreshToken "$RT"
-          # Open the partition list so the app (Developer-ID signed) can read
-          # the seeded items without an ACL prompt — -T alone can silently
-          # fail for third-party-signed apps, and a prompt hang is exactly
-          # what we are eliminating.
-          run_to 15 security set-key-partition-list -S apple-tool:,apple: -k clicky-ci "$KCRAW" >/tmp/kc-plist.log 2>&1 || { echo "partition list failed:"; cat /tmp/kc-plist.log; }
-          if run_to 15 security find-generic-password -s com.humansongs.clicky -a supabaseAccessToken -w >/tmp/kc-read.log 2>&1; then
-            echo "keychain seed verified: AT $(wc -c < /tmp/kc-read.log | tr -d " ") bytes"
-          else
-            echo "keychain READ failed:"; cat /tmp/kc-read.log
-          fi
-          opn "$HOME/HeyClicky.app"
+          # Keychain seeding REMOVED (runs 36550893041-36556134867: the
+          # unlock prompts hung the app and every read; the auth successes
+          # 36544001329-era runs 6/9/11 all came from plain callback fires
+          # on VMs with a natural keychain). Back to defaults-seed (inert
+          # but harmless) + the fires below.
+          defaults write com.humansongs.clicky supabaseAccessToken "$AT" 2>/dev/null || true
+          defaults write com.humansongs.clicky supabaseRefreshToken "$RT" 2>/dev/null || true
+          \          opn "$HOME/HeyClicky.app"
           sleep 18
           { set +x; } 2>/dev/null
           fire_cb() {  # deliver the token callback with no scheme routing in the loop
@@ -938,6 +906,9 @@ jobs:
             for f in 2 3 4 5 6 7 8; do
               echo "auth not confirmed; re-firing token callback (try $f/8)"
               curpair   # the app may have rotated the pair since the last fire
+              # The app vanished from the Dock in the run 36550893041-era fail
+              # shots — if it died, relaunch it before firing at a corpse.
+              pgrep -x HeyClicky >/dev/null 2>&1 || { echo "app not running — relaunching"; opn "$HOME/HeyClicky.app" || true; sleep 5; }
               fire_cb
               for i in $(seq 1 7); do
                 if lsafe --predicate 'subsystem == "com.humansongs.clicky"' --info --debug --last 40s 2>/dev/null | grep -qiE "authenticated as|signed in"; then
