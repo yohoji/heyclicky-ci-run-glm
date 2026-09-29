@@ -412,11 +412,6 @@ jobs:
             if Double(xhi - xlo) * sx > 260 || Double(yhi - ylo) * sy > 90 { return nil }
             return fmt(Double(pxs.reduce(0, +)) / Double(pxs.count), Double(pys.reduce(0, +)) / Double(pys.count))
           }
-          switch mode {
-          // readybtn: the final card's "Ty, I'm ready." CTA — a solid accent-
-          // blue button low in the card (the white Continue-style buttons are
-          // done by then). Same gates as the card blue detector but with a
-          // lower band: y 0.52-0.72 H, x inside the card face only.
           func readybtnTarget() -> String? {
             let y0 = Int(Double(H) * 0.52), y1 = Int(Double(H) * 0.72)
             let x0 = Int(Double(W) * 0.35), x1 = Int(Double(W) * 0.65)
@@ -437,6 +432,11 @@ jobs:
             if Double(xhi - xlo) * sx > 260 || Double(yhi - ylo) * sy > 90 { return nil }
             return fmt(Double(pxs.reduce(0, +)) / Double(pxs.count), Double(pys.reduce(0, +)) / Double(pys.count))
           }
+          switch mode {
+          // readybtn: the final card's "Ty, I'm ready." CTA — a solid accent-
+          // blue button low in the card (the white Continue-style buttons are
+          // done by then). Same gates as the card blue detector but with a
+          // lower band: y 0.52-0.72 H, x inside the card face only.
           case "whitebtn": print(whitebtnTarget() ?? "NONE")
           case "readybtn": print(readybtnTarget() ?? "NONE")
           case "blue":  print(blueTarget() ?? "NONE")
