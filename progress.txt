@@ -50,3 +50,4 @@
 12:27:15Z T+616s iter=42 step=0 busy=0 advanced=6
 12:27:16Z T+617s: demo loop exited (advanced=6, last iter 42)
 12:29:13Z T+734s: text phase done (T+734s)
+12:29:19Z T+740s: stitch done (frames=614)
