@@ -5,3 +5,4 @@
 12:20:52Z T+233s: tutorial wait done
 12:20:57Z T+238s: showme done (ax_ok=1)
 12:21:15Z T+256s: device selection done
+12:21:15Z T+256s: self-test done (BH=0 AVSD=0)
