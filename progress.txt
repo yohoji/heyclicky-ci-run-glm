@@ -4,3 +4,4 @@
 12:18:32Z T+93s: onboarding done (advanced=8, mode=blue)
 12:20:52Z T+233s: tutorial wait done
 12:20:57Z T+238s: showme done (ax_ok=1)
+12:21:15Z T+256s: device selection done
