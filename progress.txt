@@ -11,3 +11,8 @@
 12:21:29Z T+270s iter=3 step=1 busy=0 advanced=0
 12:21:36Z T+277s iter=4 step=2 busy=0 advanced=1
 12:21:55Z T+296s: loop iter 5 step=2 busy=1 advanced=1
+12:22:03Z T+304s iter=6 step=2 busy=0 advanced=1
+12:22:16Z T+317s iter=7 step=2 busy=0 advanced=1
+12:22:28Z T+329s iter=8 step=3 busy=0 advanced=2
+12:22:53Z T+354s iter=9 step=3 busy=1 advanced=2
+12:23:00Z T+361s: loop iter 10 step=3 busy=1 advanced=2
