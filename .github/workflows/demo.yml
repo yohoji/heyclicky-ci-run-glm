@@ -770,6 +770,13 @@ jobs:
               sudo sqlite3 "$SYS" \
                 "INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,indirect_object_identifier,flags) VALUES ('kTCCServiceAppleEvents','/usr/bin/osascript',1,2,4,1,X'$AXOSA','com.apple.systemevents',0);" \
                 && echo "osascript Apple Events row OK"
+              # osascript -> the app itself: deliver the token callback as a
+              # DIRECT open-location Apple Event with no LaunchServices
+              # scheme routing to lose (the flaky path behind most auth
+              # failures).
+              sudo sqlite3 "$SYS" \
+                "INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,indirect_object_identifier,flags) VALUES ('kTCCServiceAppleEvents','/usr/bin/osascript',1,2,4,1,X'$AXOSA','com.humansongs.clicky',0);" \
+                && echo "osascript->app Apple Events row OK"
             fi
             sudo killall tccd 2>/dev/null || true
             sleep 2
@@ -828,14 +835,34 @@ jobs:
           # supabaseAccessToken/supabaseRefreshToken, per the decompiled
           # SecItem queries). Seed the keychain directly; -T trusts the app
           # at creation so SecItemCopyMatching never shows a prompt.
-          run_to 15 security add-generic-password -s com.humansongs.clicky -a supabaseAccessToken -w "$AT" -T "$HOME/HeyClicky.app" -U >/dev/null 2>&1 || echo "WARN: keychain AT seed failed"
-          run_to 15 security add-generic-password -s com.humansongs.clicky -a supabaseRefreshToken -w "$RT" -T "$HOME/HeyClicky.app" -U >/dev/null 2>&1 || echo "WARN: keychain RT seed failed"
+          KCURL="$HOME/Library/Keychains/clicky-ci.keychain"
+          kcseed() {  # kcseed <account> <value>: login keychain first, then our own
+            if run_to 15 security add-generic-password -s com.humansongs.clicky -a "$1" -w "$2" -T "$HOME/HeyClicky.app" -U >"/tmp/kc-$1.log" 2>&1; then return 0; fi
+            echo "login keychain seed failed ($1):"; cat "/tmp/kc-$1.log"
+            run_to 15 security create-keychain -p clicky-ci clicky-ci.keychain >/dev/null 2>&1 || true
+            run_to 10 security unlock-keychain -p clicky-ci clicky-ci.keychain >/dev/null 2>&1 || true
+            run_to 15 security list-keychain -d user -s "$KCURL" $(security list-keychain -d user 2>/dev/null | tr -d "[:space:]") >/dev/null 2>&1 || true
+            run_to 15 security add-generic-password -s com.humansongs.clicky -a "$1" -w "$2" -T "$HOME/HeyClicky.app" -U "$KCURL" >"/tmp/kc-$1.log" 2>&1 \
+              || { echo "dedicated keychain seed failed ($1):"; cat "/tmp/kc-$1.log"; }
+          }
+          kcseed supabaseAccessToken "$AT"
+          kcseed supabaseRefreshToken "$RT"
           KCLEN=$(run_to 15 security find-generic-password -s com.humansongs.clicky -a supabaseAccessToken -w 2>/dev/null | wc -c | tr -d " ")
           echo "keychain seed verified: AT ${KCLEN} bytes"
           opn "$HOME/HeyClicky.app"
           sleep 18
           { set +x; } 2>/dev/null
-          opn "clicky://auth-callback#access_token=${CURAT}&refresh_token=${CURRT}&expires_in=3600&token_type=bearer"
+          fire_cb() {  # deliver the token callback with no scheme routing in the loop
+            # Primary: DIRECT open-location Apple Event to the app (granted by
+            # the osascript->app TCC row above). LaunchServices scheme routing
+            # silently ate every fire on ~half the VMs.
+            if run_to 20 osascript -e "tell application id "com.humansongs.clicky" to open location "clicky://auth-callback#access_token=${CURAT}&refresh_token=${CURRT}&expires_in=3600&token_type=bearer"" >/dev/null 2>&1; then
+              echo "callback delivered via Apple Event"; return 0
+            fi
+            echo "osascript open location failed; falling back to open -a"
+            run_to 15 open -a "$HOME/HeyClicky.app" "clicky://auth-callback#access_token=${CURAT}&refresh_token=${CURRT}&expires_in=3600&token_type=bearer" 2>/dev/null || true
+          }
+          fire_cb
           set -x
           # The app may ROTATE the seeded refresh token during its launch-time
             # recovery; firing the callback with our stale secret pair then
@@ -883,10 +910,7 @@ jobs:
             for f in 2 3 4 5 6 7 8; do
               echo "auth not confirmed; re-firing token callback (try $f/8)"
               curpair   # the app may have rotated the pair since the last fire
-              case $((f % 3)) in
-                0) opn -b com.humansongs.clicky "clicky://auth-callback#access_token=${CURAT}&refresh_token=${CURRT}&expires_in=3600&token_type=bearer" || true ;;
-                *) opn "clicky://auth-callback#access_token=${CURAT}&refresh_token=${CURRT}&expires_in=3600&token_type=bearer" || true ;;
-              esac
+              fire_cb
               for i in $(seq 1 7); do
                 if lsafe --predicate 'subsystem == "com.humansongs.clicky"' --info --debug --last 40s 2>/dev/null | grep -qiE "authenticated as|signed in"; then
                   echo "auth confirmed on try $f after ~$((i*3))s"; AUTHED=1; break
