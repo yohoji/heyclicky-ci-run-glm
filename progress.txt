@@ -2,3 +2,4 @@
 12:16:59Z T+0s: launch step started
 12:17:32Z T+33s: auth done (AUTHED=1)
 12:18:32Z T+93s: onboarding done (advanced=8, mode=blue)
+12:20:52Z T+233s: tutorial wait done
