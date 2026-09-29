@@ -843,21 +843,32 @@ jobs:
           # our own keychain, unlock it (we hold the password), make it the
           # DEFAULT (so the app's own SecItemAdd lands there) and seed the
           # token pair into it with the app in the item ACL (-T).
-          KCURL="$HOME/Library/Keychains/clicky-ci.keychain"
-          run_to 15 security create-keychain -p clicky-ci clicky-ci.keychain >/tmp/kc-create.log 2>&1 || true
-          run_to 10 security unlock-keychain -p clicky-ci clicky-ci.keychain >/tmp/kc-unlock.log 2>&1 || cat /tmp/kc-unlock.log
-          run_to 10 security set-keychain-settings -t 86400 clicky-ci.keychain >/dev/null 2>&1 || true
-          run_to 10 security default-keychain -s "$KCURL" >/tmp/kc-default.log 2>&1 || cat /tmp/kc-default.log
-          run_to 10 security list-keychain -d user -s "$KCURL" login.keychain >/tmp/kc-list.log 2>&1 || cat /tmp/kc-list.log
+          # 36552780580: create-keychain used a RELATIVE path (workspace),
+          # while default/search-list/seed pointed at ~/Library/Keychains/
+          # clicky-ci.keychain — a ghost. Absolute paths everywhere now,
+          # and the read-back shows its stderr so a silent failure can
+          # never hide again.
+          KCURL="$HOME/Library/Keychains/clicky-ci.keychain-db"
+          KCRAW="$HOME/Library/Keychains/clicky-ci.keychain"
+          rm -f "$KCRAW" "$KCURL" 2>/dev/null || true
+          run_to 15 security create-keychain -p clicky-ci "$KCRAW" >/tmp/kc-create.log 2>&1 || cat /tmp/kc-create.log
+          run_to 10 security unlock-keychain -p clicky-ci "$KCRAW" >/tmp/kc-unlock.log 2>&1 || cat /tmp/kc-unlock.log
+          run_to 10 security set-keychain-settings -t 86400 "$KCRAW" >/dev/null 2>&1 || true
+          run_to 10 security default-keychain -s "$KCRAW" >/tmp/kc-default.log 2>&1 || cat /tmp/kc-default.log
+          run_to 10 security list-keychain -d user -s "$KCRAW" "$HOME/Library/Keychains/login.keychain-db" >/tmp/kc-list.log 2>&1 || cat /tmp/kc-list.log
           echo "default keychain: $(run_to 10 security default-keychain 2>/dev/null)"
+          echo "search list: $(run_to 10 security list-keychain -d user 2>/dev/null | tr -d \n)"
           kcseed() {  # kcseed <account> <value>
-            run_to 15 security add-generic-password -s com.humansongs.clicky -a "$1" -w "$2" -T "$HOME/HeyClicky.app" -U "$KCURL" >"/tmp/kc-$1.log" 2>&1 \
+            run_to 15 security add-generic-password -s com.humansongs.clicky -a "$1" -w "$2" -T "$HOME/HeyClicky.app" -U "$KCRAW" >"/tmp/kc-$1.log" 2>&1 \
               || { echo "keychain seed failed ($1):"; cat "/tmp/kc-$1.log"; }
           }
           kcseed supabaseAccessToken "$AT"
           kcseed supabaseRefreshToken "$RT"
-          KCLEN=$(run_to 15 security find-generic-password -s com.humansongs.clicky -a supabaseAccessToken -w 2>/dev/null | wc -c | tr -d " ")
-          echo "keychain seed verified: AT ${KCLEN} bytes"
+          if run_to 15 security find-generic-password -s com.humansongs.clicky -a supabaseAccessToken -w >/tmp/kc-read.log 2>&1; then
+            echo "keychain seed verified: AT $(wc -c < /tmp/kc-read.log | tr -d \ \) bytes"
+          else
+            echo "keychain READ failed:"; cat /tmp/kc-read.log
+          fi
           opn "$HOME/HeyClicky.app"
           sleep 18
           { set +x; } 2>/dev/null
