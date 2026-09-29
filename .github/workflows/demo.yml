@@ -1367,7 +1367,7 @@ jobs:
             ax_handled=0
             mark "pre-ax-press i=$i"
             if [ -x /tmp/ax_driver ]; then
-              for q in continue next start record done; do
+              for q in continue next start record done ready; do
                 AR=$(axd 6 press "$q" 2>/dev/null || echo DRIVER-ERROR)
                 echo "ax demo iter $i q=$q -> $AR"
                 case "$AR" in
