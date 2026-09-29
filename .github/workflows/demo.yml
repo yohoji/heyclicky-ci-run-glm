@@ -813,22 +813,25 @@ jobs:
           sa -t input  -s "BlackHole 2ch" || true
           sa -t output -s "BlackHole 2ch" || true
           echo "pre-launch audio: $(sa -c 2>/dev/null || echo unknown)"
-          # Seed the session DIRECTLY: SupabaseAuthManager persists
-          # supabaseAccessToken/supabaseRefreshToken in NSUserDefaults and
-          # recovers the cached session at launch ("Auth recovery failed;
-          # keeping cached Supabase session..." in the binary strings). This
-          # bypasses LaunchServices entirely — the last two runs lost the
-          # clicky:// callback to scheme-handler routing and never signed
-          # in. The clicky:// fires below remain as belt-and-suspenders.
+          # Seed the session so the app signs in AT LAUNCH, before any clicky://
+          # fire — the decompiled SupabaseAuthManager recovers a cached
+          # session on startup.
           # Force LaunchServices to register the app NOW (its clicky:// URL
           # scheme otherwise races the handler registration — some VMs hand
           # every callback to Safari instead).
           LSR="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
           run_to 30 "$LSR" -f "$HOME/HeyClicky.app" 2>/dev/null || true
           echo "lsregister done"
-          defaults write com.humansongs.clicky supabaseAccessToken "$AT"
-          defaults write com.humansongs.clicky supabaseRefreshToken "$RT"
-          defaults read com.humansongs.clicky supabaseAccessToken >/dev/null 2>&1 && echo "session seeded (AT len ${#AT})" || echo "WARN: session seed write failed"
+          # The defaults keys are only a legacy migration SOURCE — the app
+          # recovers from the LOGIN KEYCHAIN (ClickyKeychainStore:
+          # kSecAttrService com.humansongs.clicky, accounts
+          # supabaseAccessToken/supabaseRefreshToken, per the decompiled
+          # SecItem queries). Seed the keychain directly; -T trusts the app
+          # at creation so SecItemCopyMatching never shows a prompt.
+          run_to 15 security add-generic-password -s com.humansongs.clicky -a supabaseAccessToken -w "$AT" -T "$HOME/HeyClicky.app" -U >/dev/null 2>&1 || echo "WARN: keychain AT seed failed"
+          run_to 15 security add-generic-password -s com.humansongs.clicky -a supabaseRefreshToken -w "$RT" -T "$HOME/HeyClicky.app" -U >/dev/null 2>&1 || echo "WARN: keychain RT seed failed"
+          KCLEN=$(run_to 15 security find-generic-password -s com.humansongs.clicky -a supabaseAccessToken -w 2>/dev/null | wc -c | tr -d " ")
+          echo "keychain seed verified: AT ${KCLEN} bytes"
           opn "$HOME/HeyClicky.app"
           sleep 18
           { set +x; } 2>/dev/null
