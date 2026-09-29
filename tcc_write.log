@@ -1,0 +1,8 @@
+designated requirement: identifier "com.humansongs.clicky" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = "2UDAY4J48G"
+csreq blob hex length: 328
+kTCCServiceAccessibility INSERT OK (with csreq)
+kTCCServiceScreenCapture INSERT OK (with csreq)
+kTCCServiceMicrophone INSERT OK (with csreq)
+kTCCServiceAccessibility|com.humansongs.clicky|2|164
+kTCCServiceScreenCapture|com.humansongs.clicky|2|164
+kTCCServiceMicrophone|com.humansongs.clicky|2|164

@@ -1,2 +1,3 @@
 # demo progress — run 36566995814
 12:16:59Z T+0s: launch step started
+12:17:32Z T+33s: auth done (AUTHED=1)
