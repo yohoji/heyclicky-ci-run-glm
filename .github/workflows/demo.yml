@@ -835,15 +835,24 @@ jobs:
           # supabaseAccessToken/supabaseRefreshToken, per the decompiled
           # SecItem queries). Seed the keychain directly; -T trusts the app
           # at creation so SecItemCopyMatching never shows a prompt.
+          # Run 36550893041 SMOKING GUN: the login keychain is LOCKED on some
+          # VMs — the seed read blocked 15s on an "enter the login keychain
+          # password" prompt that stayed up for minutes, and the app's own
+          # SecItem reads/writes hang behind the same prompt, so it can never
+          # authenticate. Stop touching the login keychain entirely: create
+          # our own keychain, unlock it (we hold the password), make it the
+          # DEFAULT (so the app's own SecItemAdd lands there) and seed the
+          # token pair into it with the app in the item ACL (-T).
           KCURL="$HOME/Library/Keychains/clicky-ci.keychain"
-          kcseed() {  # kcseed <account> <value>: login keychain first, then our own
-            if run_to 15 security add-generic-password -s com.humansongs.clicky -a "$1" -w "$2" -T "$HOME/HeyClicky.app" -U >"/tmp/kc-$1.log" 2>&1; then return 0; fi
-            echo "login keychain seed failed ($1):"; cat "/tmp/kc-$1.log"
-            run_to 15 security create-keychain -p clicky-ci clicky-ci.keychain >/dev/null 2>&1 || true
-            run_to 10 security unlock-keychain -p clicky-ci clicky-ci.keychain >/dev/null 2>&1 || true
-            run_to 15 security list-keychain -d user -s "$KCURL" $(security list-keychain -d user 2>/dev/null | tr -d "[:space:]") >/dev/null 2>&1 || true
+          run_to 15 security create-keychain -p clicky-ci clicky-ci.keychain >/tmp/kc-create.log 2>&1 || true
+          run_to 10 security unlock-keychain -p clicky-ci clicky-ci.keychain >/tmp/kc-unlock.log 2>&1 || cat /tmp/kc-unlock.log
+          run_to 10 security set-keychain-settings -t 86400 clicky-ci.keychain >/dev/null 2>&1 || true
+          run_to 10 security default-keychain -s "$KCURL" >/tmp/kc-default.log 2>&1 || cat /tmp/kc-default.log
+          run_to 10 security list-keychain -d user -s "$KCURL" login.keychain >/tmp/kc-list.log 2>&1 || cat /tmp/kc-list.log
+          echo "default keychain: $(run_to 10 security default-keychain 2>/dev/null)"
+          kcseed() {  # kcseed <account> <value>
             run_to 15 security add-generic-password -s com.humansongs.clicky -a "$1" -w "$2" -T "$HOME/HeyClicky.app" -U "$KCURL" >"/tmp/kc-$1.log" 2>&1 \
-              || { echo "dedicated keychain seed failed ($1):"; cat "/tmp/kc-$1.log"; }
+              || { echo "keychain seed failed ($1):"; cat "/tmp/kc-$1.log"; }
           }
           kcseed supabaseAccessToken "$AT"
           kcseed supabaseRefreshToken "$RT"
@@ -853,14 +862,17 @@ jobs:
           sleep 18
           { set +x; } 2>/dev/null
           fire_cb() {  # deliver the token callback with no scheme routing in the loop
-            # Primary: DIRECT open-location Apple Event to the app (granted by
-            # the osascript->app TCC row above). LaunchServices scheme routing
-            # silently ate every fire on ~half the VMs.
-            if run_to 20 osascript -e "tell application id "com.humansongs.clicky" to open location "clicky://auth-callback#access_token=${CURAT}&refresh_token=${CURRT}&expires_in=3600&token_type=bearer"" >/dev/null 2>&1; then
-              echo "callback delivered via Apple Event"; return 0
-            fi
-            echo "osascript open location failed; falling back to open -a"
-            run_to 15 open -a "$HOME/HeyClicky.app" "clicky://auth-callback#access_token=${CURAT}&refresh_token=${CURRT}&expires_in=3600&token_type=bearer" 2>/dev/null || true
+            # Primary: open -a — direct app targeting, no LaunchServices scheme
+            # routing to lose (bare scheme opens silently went to Safari on
+            # ~half the VMs). Then the direct open-location Apple Event (the
+            # osascript->app TCC row above). Run 36550893041 lesson: an
+            # "accepted" Apple Event is NOT proof of delivery — the app never
+            # acted on nine of them; only the app logging "Authenticated as"
+            # counts.
+            run_to 15 open -a "$HOME/HeyClicky.app" "clicky://auth-callback#access_token=${CURAT}&refresh_token=${CURRT}&expires_in=3600&token_type=bearer" >/dev/null 2>&1 \
+              || true
+            run_to 20 osascript -e "tell application id "com.humansongs.clicky" to open location "clicky://auth-callback#access_token=${CURAT}&refresh_token=${CURRT}&expires_in=3600&token_type=bearer"" >/dev/null 2>&1 \
+              || echo "osascript open location failed"
           }
           fire_cb
           set -x
