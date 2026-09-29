@@ -413,7 +413,32 @@ jobs:
             return fmt(Double(pxs.reduce(0, +)) / Double(pxs.count), Double(pys.reduce(0, +)) / Double(pys.count))
           }
           switch mode {
+          // readybtn: the final card's "Ty, I'm ready." CTA — a solid accent-
+          // blue button low in the card (the white Continue-style buttons are
+          // done by then). Same gates as the card blue detector but with a
+          // lower band: y 0.52-0.72 H, x inside the card face only.
+          func readybtnTarget() -> String? {
+            let y0 = Int(Double(H) * 0.52), y1 = Int(Double(H) * 0.72)
+            let x0 = Int(Double(W) * 0.35), x1 = Int(Double(W) * 0.65)
+            var pxs = [Int](); var pys = [Int]()
+            var y = y0
+            while y < y1 {
+              var x = x0
+              while x < x1 {
+                let (r, g, b) = rgb(x, y)
+                if b > 140 && b > r + 50 && b > g + 30 && r < 120 { pxs.append(x); pys.append(y) }
+                x += 2
+              }
+              y += 2
+            }
+            if pxs.count < 400 { return nil }   // ~137x40 button on a 2x2 grid
+            let xlo = pxs.min()!, xhi = pxs.max()!, ylo = pys.min()!, yhi = pys.max()!
+            if Double(xhi - xlo) * sx < 60 || Double(yhi - ylo) * sy < 18 { return nil }
+            if Double(xhi - xlo) * sx > 260 || Double(yhi - ylo) * sy > 90 { return nil }
+            return fmt(Double(pxs.reduce(0, +)) / Double(pxs.count), Double(pys.reduce(0, +)) / Double(pys.count))
+          }
           case "whitebtn": print(whitebtnTarget() ?? "NONE")
+          case "readybtn": print(readybtnTarget() ?? "NONE")
           case "blue":  print(blueTarget() ?? "NONE")
           case "allow": print(dialogTarget(800) ?? "NONE")
           case "showme": print(showmeTarget() ?? "NONE")
@@ -1434,7 +1459,10 @@ jobs:
                 if [ "$nfStreak" -ge 3 ]; then
                   run_to 8 screencapture -x /tmp/wb.png 2>/dev/null || true
                   WXY=$(run_to 20 /tmp/find_target /tmp/wb.png whitebtn 2>/dev/null || echo NONE)
-                  echo "stale-NOTFOUND nf=$nfStreak whitebtn -> $WXY"
+                  case "$WXY" in
+                    NONE) WXY=$(run_to 20 /tmp/find_target /tmp/wb.png readybtn 2>/dev/null || echo NONE) ;;
+                  esac
+                  echo "stale-NOTFOUND nf=$nfStreak whitebtn/readybtn -> $WXY"
                   case "$WXY" in
                     *,*) cl c:${WXY%,*},${WXY#*,} || true; ax_handled=1; nfStreak=0 ;;
                   esac
