@@ -1,0 +1,149 @@
+AXApplication [on] 'HeyClicky' @ -1,-1 -1x-1
+  AXWindow [on] '' @ 0,0 1024x768
+    AXGroup [on] '' @ 0,0 1024x768
+  AXWindow [on] '' @ 102,0 820x688
+    AXGroup [on] '' @ 102,0 820x688
+  AXWindow [on] '' @ 0,31 1024x679
+    AXGroup [on] '' @ 0,31 1024x679
+      AXButton [on] 'Hide agent bubbles' @ 966,57 32x24
+  AXMenuBar [on] '' @ 0,0 1024x30
+    AXMenuBarItem [on] 'Apple' @ 10,0 34x30
+      AXMenu [on] '' @ 0,768 0x0
+        AXMenuItem [on] 'About This Mac' @ 0,768 0x0
+        AXMenuItem [on] 'System Information' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [on] 'System Settings…, 1 update' @ 0,768 0x0
+        AXMenuItem [on] 'App Store' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [on] 'Recent Items' @ 0,768 0x0
+          AXMenu [on] '' @ 0,768 0x0
+            AXMenuItem [off] 'Applications' @ 0,768 0x0
+            AXMenuItem [on] 'Installer' @ 0,768 0x0
+            AXMenuItem [on] 'Show “Installer” in Finder' @ 0,768 0x0
+            AXMenuItem [on] 'Preview' @ 0,768 0x0
+            AXMenuItem [on] 'Show “Preview” in Finder' @ 0,768 0x0
+            AXMenuItem [on] 'Safari' @ 0,768 0x0
+            AXMenuItem [on] 'Show “Safari” in Finder' @ 0,768 0x0
+            AXMenuItem [on] 'System Settings' @ 0,768 0x0
+            AXMenuItem [on] 'Show “System Settings” in Finder' @ 0,768 0x0
+            AXMenuItem [off] '' @ 0,768 0x0
+            AXMenuItem [off] 'Documents' @ 0,768 0x0
+            AXMenuItem [on] 'AnkaGuestAddons.pkg' @ 0,768 0x0
+            AXMenuItem [on] 'Show “AnkaGuestAddons.pkg” in Finder' @ 0,768 0x0
+            AXMenuItem [on] 'index.html' @ 0,768 0x0
+            AXMenuItem [on] 'Show “index.html” in Finder' @ 0,768 0x0
+            AXMenuItem [on] 'spacex-competitor-brief.pdf' @ 0,768 0x0
+            AXMenuItem [on] 'Show “spacex-competitor-brief.pdf” in Finder' @ 0,768 0x0
+            AXMenuItem [off] '' @ 0,768 0x0
+            AXMenuItem [off] 'Servers' @ 0,768 0x0
+            AXMenuItem [on] 'Macintosh HD' @ 0,768 0x0
+            AXMenuItem [off] '' @ 0,768 0x0
+            AXMenuItem [on] 'Clear Menu' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [on] 'Force Quit…' @ 0,768 0x0
+        AXMenuItem [on] 'Force Quit HeyClicky' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [on] 'Sleep' @ 0,768 0x0
+        AXMenuItem [on] 'Restart…' @ 0,768 0x0
+        AXMenuItem [on] 'Restart' @ 0,768 0x0
+        AXMenuItem [on] 'Shut Down…' @ 0,768 0x0
+        AXMenuItem [on] 'Shut Down' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [on] 'Lock Screen' @ 0,768 0x0
+        AXMenuItem [on] 'Log Out Anka…' @ 0,768 0x0
+        AXMenuItem [on] 'Log Out Anka' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+    AXMenuBarItem [on] 'HeyClicky' @ 44,0 86x30
+      AXMenu [on] '' @ 0,768 0x0
+        AXMenuItem [on] 'About HeyClicky' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [on] 'Settings…' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [on] 'Services' @ 0,768 0x0
+          AXMenu [on] '' @ 0,768 0x0
+            AXMenuItem [on] 'Activity Monitor' @ 0,768 0x0
+            AXMenuItem [on] 'Allocations & Leaks' @ 0,768 0x0
+            AXMenuItem [on] 'File Activity' @ 0,768 0x0
+            AXMenuItem [on] 'System Trace' @ 0,768 0x0
+            AXMenuItem [on] 'Time Profile Active Application' @ 0,768 0x0
+            AXMenuItem [on] 'Time Profile App Under Mouse' @ 0,768 0x0
+            AXMenuItem [on] 'Time Profile Entire System' @ 0,768 0x0
+            AXMenuItem [on] 'Toggle Instruments Recording' @ 0,768 0x0
+            AXMenuItem [on] 'Services Settings…' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [on] 'Hide HeyClicky' @ 0,768 0x0
+        AXMenuItem [on] 'Hide Others' @ 0,768 0x0
+        AXMenuItem [off] 'Show All' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [on] 'Quit HeyClicky' @ 0,768 0x0
+    AXMenuBarItem [on] 'Edit' @ 130,0 44x30
+      AXMenu [on] '' @ 0,768 0x0
+        AXMenuItem [off] 'Undo' @ 0,768 0x0
+        AXMenuItem [off] 'Redo' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [off] 'Cut' @ 0,768 0x0
+        AXMenuItem [off] 'Copy' @ 0,768 0x0
+        AXMenuItem [off] 'Paste' @ 0,768 0x0
+        AXMenuItem [off] 'Delete' @ 0,768 0x0
+        AXMenuItem [off] 'Select All' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [on] 'AutoFill' @ 0,768 0x0
+          AXMenu [on] '' @ 0,768 0x0
+            AXMenuItem [off] 'Contact…' @ 0,768 0x0
+            AXMenuItem [off] 'Passwords…' @ 0,768 0x0
+            AXMenuItem [off] 'Credit Card…' @ 0,768 0x0
+        AXMenuItem [on] 'Start Dictation…' @ 0,768 0x0
+        AXMenuItem [on] 'Emoji & Symbols' @ 0,768 0x0
+    AXMenuBarItem [on] 'View' @ 174,0 50x30
+      AXMenu [on] '' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [off] 'Enter Full Screen' @ 0,768 0x0
+    AXMenuBarItem [on] 'Window' @ 224,0 69x30
+      AXMenu [on] '' @ 0,768 0x0
+        AXMenuItem [off] 'Close' @ 0,768 0x0
+        AXMenuItem [on] 'Close All' @ 0,768 0x0
+        AXMenuItem [off] 'Minimize' @ 0,768 0x0
+        AXMenuItem [on] 'Minimize All' @ 0,768 0x0
+        AXMenuItem [off] 'Zoom' @ 0,768 0x0
+        AXMenuItem [on] 'Zoom All' @ 0,768 0x0
+        AXMenuItem [off] 'Fill' @ 0,768 0x0
+        AXMenuItem [off] 'Center' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [on] 'Move & Resize' @ 0,768 0x0
+          AXMenu [on] '' @ 0,768 0x0
+            AXMenuItem [off] 'Halves' @ 0,768 0x0
+            AXMenuItem [off] 'Left' @ 0,768 0x0
+            AXMenuItem [off] 'Right' @ 0,768 0x0
+            AXMenuItem [off] 'Top' @ 0,768 0x0
+            AXMenuItem [off] 'Bottom' @ 0,768 0x0
+            AXMenuItem [off] '' @ 0,768 0x0
+            AXMenuItem [off] 'Quarters' @ 0,768 0x0
+            AXMenuItem [off] 'Top Left' @ 0,768 0x0
+            AXMenuItem [off] 'Top Right' @ 0,768 0x0
+            AXMenuItem [off] 'Bottom Left' @ 0,768 0x0
+            AXMenuItem [off] 'Bottom Right' @ 0,768 0x0
+            AXMenuItem [off] '' @ 0,768 0x0
+            AXMenuItem [off] 'Arrange' @ 0,768 0x0
+            AXMenuItem [off] 'Left & Right' @ 0,768 0x0
+            AXMenuItem [off] 'Left & Quarters' @ 0,768 0x0
+            AXMenuItem [off] 'Right & Left' @ 0,768 0x0
+            AXMenuItem [off] 'Right & Quarters' @ 0,768 0x0
+            AXMenuItem [off] 'Top & Bottom' @ 0,768 0x0
+            AXMenuItem [off] 'Top & Quarters' @ 0,768 0x0
+            AXMenuItem [off] 'Bottom & Top' @ 0,768 0x0
+            AXMenuItem [off] 'Bottom & Quarters' @ 0,768 0x0
+            AXMenuItem [off] 'Quarters' @ 0,768 0x0
+            AXMenuItem [off] '' @ 0,768 0x0
+            AXMenuItem [off] 'Return to Previous Size' @ 0,768 0x0
+        AXMenuItem [off] 'Full Screen Tile' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [off] 'Remove Window from Set' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [on] 'Bring All to Front' @ 0,768 0x0
+        AXMenuItem [on] 'Arrange in Front' @ 0,768 0x0
+    AXMenuBarItem [on] 'Help' @ 293,0 48x30
+      AXMenu [on] '' @ 0,768 0x0
+        AXMenuItem [on] 'Report a Bug…' @ 0,768 0x0
+        AXMenuItem [on] 'Request a Feature…' @ 0,768 0x0
+        AXMenuItem [off] '' @ 0,768 0x0
+        AXMenuItem [on] 'Install Update & Relaunch' @ 0,768 0x0
