@@ -724,7 +724,11 @@ jobs:
             # (each runner starts with an empty TCC.db); ScreenCapture is the one
             # we're actually testing — grant it before launch so the app reads it
             # at startup (Screen Recording is otherwise cached until relaunch).
-            for SVC in kTCCServiceAccessibility kTCCServiceScreenCapture; do
+            # Microphone too: the first-launch mic TCC prompt was up in every
+            # auth-failure run (36495491402/36544001329 shots) while the app
+            # sat on its welcome card; grant it like the other services so no
+            # system prompt can interfere with session recovery.
+            for SVC in kTCCServiceAccessibility kTCCServiceScreenCapture kTCCServiceMicrophone; do
               sudo sqlite3 "$SYS" \
                 "INSERT OR REPLACE INTO access (service,client,client_type,auth_value,auth_reason,auth_version,csreq,flags) VALUES ('$SVC','$BID',0,2,4,1,X'$CSHEX',0);" \
                 >>evidence/tcc_write.log 2>&1 && echo "$SVC INSERT OK (with csreq)" | tee -a evidence/tcc_write.log \
