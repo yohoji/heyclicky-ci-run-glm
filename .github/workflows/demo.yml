@@ -864,8 +864,13 @@ jobs:
           }
           kcseed supabaseAccessToken "$AT"
           kcseed supabaseRefreshToken "$RT"
+          # Open the partition list so the app (Developer-ID signed) can read
+          # the seeded items without an ACL prompt — -T alone can silently
+          # fail for third-party-signed apps, and a prompt hang is exactly
+          # what we are eliminating.
+          run_to 15 security set-key-partition-list -S apple-tool:,apple: -k clicky-ci "$KCRAW" >/tmp/kc-plist.log 2>&1 || { echo "partition list failed:"; cat /tmp/kc-plist.log; }
           if run_to 15 security find-generic-password -s com.humansongs.clicky -a supabaseAccessToken -w >/tmp/kc-read.log 2>&1; then
-            echo "keychain seed verified: AT $(wc -c < /tmp/kc-read.log | tr -d \ \) bytes"
+            echo "keychain seed verified: AT $(wc -c < /tmp/kc-read.log | tr -d " ") bytes"
           else
             echo "keychain READ failed:"; cat /tmp/kc-read.log
           fi
