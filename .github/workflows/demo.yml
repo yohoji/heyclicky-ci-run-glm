@@ -412,24 +412,45 @@ jobs:
             if Double(xhi - xlo) * sx > 260 || Double(yhi - ylo) * sy > 90 { return nil }
             return fmt(Double(pxs.reduce(0, +)) / Double(pxs.count), Double(pys.reduce(0, +)) / Double(pys.count))
           }
+          // readybtn: the FINAL card ("That's it!"). Its unique feature is the
+          // big blue replay triangle (y ~0.36-0.55 H, nothing else in the app
+          // is a solid blue blob that large); the "Ty, I'm ready." CTA is a
+          // WHITE pill below it (y ~0.54-0.72 H, ~137px wide — the caption
+          // bubble on gesture cards is ~215px at the same height, so a
+          // triangle is required first and the white blob's width is bounded).
           func readybtnTarget() -> String? {
-            let y0 = Int(Double(H) * 0.52), y1 = Int(Double(H) * 0.72)
-            let x0 = Int(Double(W) * 0.35), x1 = Int(Double(W) * 0.65)
-            var pxs = [Int](); var pys = [Int]()
-            var y = y0
-            while y < y1 {
-              var x = x0
-              while x < x1 {
+            var txs = [Int](); var tys = [Int]()
+            let ty0 = Int(Double(H) * 0.34), ty1 = Int(Double(H) * 0.56)
+            let tx0 = Int(Double(W) * 0.38), tx1 = Int(Double(W) * 0.62)
+            var y = ty0
+            while y < ty1 {
+              var x = tx0
+              while x < tx1 {
                 let (r, g, b) = rgb(x, y)
-                if b > 140 && b > r + 50 && b > g + 30 && r < 120 { pxs.append(x); pys.append(y) }
+                if b > 140 && b > r + 50 && b > g + 30 && r < 120 { txs.append(x); tys.append(y) }
                 x += 2
               }
               y += 2
             }
-            if pxs.count < 400 { return nil }   // ~137x40 button on a 2x2 grid
-            let xlo = pxs.min()!, xhi = pxs.max()!, ylo = pys.min()!, yhi = pys.max()!
-            if Double(xhi - xlo) * sx < 60 || Double(yhi - ylo) * sy < 18 { return nil }
-            if Double(xhi - xlo) * sx > 260 || Double(yhi - ylo) * sy > 90 { return nil }
+            if txs.count < 150 { return nil }   // ~80x90 triangle -> ~900 samples
+            let tw = Double(txs.max()! - txs.min()!) * sx
+            if tw < 40 || tw > 160 { return nil }
+            var pxs = [Int](); var pys = [Int]()
+            let py0 = Int(Double(H) * 0.54), py1 = Int(Double(H) * 0.72)
+            let px0 = Int(Double(W) * 0.35), px1 = Int(Double(W) * 0.65)
+            y = py0
+            while y < py1 {
+              var x = px0
+              while x < px1 {
+                let (r, g, b) = rgb(x, y)
+                if r > 230 && g > 230 && b > 230 { pxs.append(x); pys.append(y) }
+                x += 2
+              }
+              y += 2
+            }
+            if pxs.count < 350 { return nil }
+            let wpx = Double(pxs.max()! - pxs.min()!) * sx
+            if wpx < 80 || wpx > 200 { return nil }   // pill ~137; bubble ~215 rejected
             return fmt(Double(pxs.reduce(0, +)) / Double(pxs.count), Double(pys.reduce(0, +)) / Double(pys.count))
           }
           switch mode {
