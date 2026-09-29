@@ -433,47 +433,259 @@ jobs:
             return fmt(Double(pxs.reduce(0, +)) / Double(pxs.count), Double(pys.reduce(0, +)) / Double(pys.count))
           }
           switch mode {
-          // readybtn: the FINAL card ("That's it!"). Its unique feature is the
-          // big blue replay triangle (y ~0.36-0.55 H, nothing else in the app
-          // is a solid blue blob that large); the "Ty, I'm ready." CTA is a
-          // WHITE pill below it (y ~0.54-0.72 H, ~137px wide — the caption
-          // bubble on gesture cards is ~215px at the same height, so a
-          // triangle is required first and the white blob's width is bounded).
-          func readybtnTarget() -> String? {
-            var txs = [Int](); var tys = [Int]()
-            let ty0 = Int(Double(H) * 0.34), ty1 = Int(Double(H) * 0.56)
-            let tx0 = Int(Double(W) * 0.38), tx1 = Int(Double(W) * 0.62)
-            var y = ty0
-            while y < ty1 {
-              var x = tx0
-              while x < tx1 {
-                let (r, g, b) = rgb(x, y)
-                if b > 140 && b > r + 50 && b > g + 30 && r < 120 { txs.append(x); tys.append(y) }
-                x += 2
-              }
-              y += 2
-            }
-            if txs.count < 150 { return nil }   // ~80x90 triangle -> ~900 samples
-            let tw = Double(txs.max()! - txs.min()!) * sx
-            if tw < 40 || tw > 160 { return nil }
-            var pxs = [Int](); var pys = [Int]()
-            let py0 = Int(Double(H) * 0.54), py1 = Int(Double(H) * 0.72)
-            let px0 = Int(Double(W) * 0.35), px1 = Int(Double(W) * 0.65)
-            y = py0
-            while y < py1 {
-              var x = px0
-              while x < px1 {
-                let (r, g, b) = rgb(x, y)
-                if r > 230 && g > 230 && b > 230 { pxs.append(x); pys.append(y) }
-                x += 2
-              }
-              y += 2
-            }
-            if pxs.count < 350 { return nil }
-            let wpx = Double(pxs.max()! - pxs.min()!) * sx
-            if wpx < 80 || wpx > 200 { return nil }   // pill ~137; bubble ~215 rejected
-            return fmt(Double(pxs.reduce(0, +)) / Double(pxs.count), Double(pys.reduce(0, +)) / Double(pys.count))
+          // readybtn: the final card's "Ty, I'm ready." CTA — a solid accent-
+          // blue button low in the card (the white Continue-style buttons are
+          // done by then). Same gates as the card blue detector but with a
+          // lower band: y 0.52-0.72 H, x inside the card face only.
+          case "whitebtn": print(whitebtnTarget() ?? "NONE")
+          case "readybtn": print(readybtnTarget() ?? "NONE")
+          case "blue":  print(blueTarget() ?? "NONE")
+          case "allow": print(dialogTarget(800) ?? "NONE")
+          case "showme": print(showmeTarget() ?? "NONE")
+          case "card":  // demo phase (Safari may be behind the card): a TCC
+                        // dialog, or a real card button — bottom-centre of the
+                        // notch card, blue, wide and solid (not the cursor
+                        // triangle, not Gmail's own "Next"/"Forgot email?").
+            if let d = dialogTarget(1500) { print("dialog \(d)") }
+            else if let b = blueTarget(minWidth: 40, xFrac: 0.26, yMinFrac: 0.55,
+                                       solidFill: 0.5) { print("blue \(b)") }
+            else { print("none") }
+          default:      // "classify": what is on screen + where to click
+            // A big light region = Safari/browser page => the tutorial has started
+            // => onboarding is done. Report it so the driver stops onboarding.
+            if let (_, _, _, _, wf, hf) = lightBox(), wf > 0.45 || hf > 0.60 { print("browser") }
+            else if let d = dialogTarget(1500) { print("dialog \(d)") }
+            else if let b = blueTarget()  { print("blue \(b)") }
+            else { print("none") }
           }
+          SW
+          cat > /tmp/ax_driver.swift <<'SW2'
+          import AppKit
+          import ApplicationServices
+
+          // Usage: ax_driver trusted | dump | press <query> | find <query> | cardtext
+          // Walks the Accessibility tree of com.humansongs.clicky. press/find
+          // match an AXButton/AXLink/AXMenuItem whose title/description/value
+          // contains the query (case-insensitive). AX coords are global screen
+          // points — the same space cliclick uses.
+          let args = CommandLine.arguments
+          guard args.count >= 2 else { print("USAGE"); exit(0) }
+          let mode = args[1]
+          let query = args.count > 2 ? args[2].lowercased() : ""
+          // Server mode reuses the same walk for every command; the
+          // collectors below keyed on 'mode' never fired because mode is
+          // always 'server' there — cardtext returned empty and dump printed
+          // only a summary line for the whole run (36473063489: the loop was
+          // blind, select_bh could never see the mic dropdown). The server
+          // sets walkMode per command; dump output is collected into
+          // dumpLines and joined with literal backslash-n so a multi-line tree fits
+          // the one-line-per-command FIFO protocol.
+          var walkMode = mode
+          var dumpLines: [String] = []
+
+          func trustedNow() -> Bool {
+            let k = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+            return AXIsProcessTrustedWithOptions([k: false] as CFDictionary)
+          }
+          if mode == "trusted" { print(trustedNow() ? "YES" : "NO"); exit(0) }
+          if mode == "dtap" {
+            // Double-tap the Control key exactly the way the app's
+            // ModifierDoubleTapDetector sees a physical press: typed
+            // kCGEventFlagsChanged events carrying the control mask
+            // (keycode 59), empty->ctrl->empty twice, press-to-press
+            // 0.21s — inside the detector's 0.4s/0.5s windows (from
+            // FUN_100a56de4 in doubles.c). cliclick kd/ku alone never
+            // registered (357421).
+            func tap(_ down: Bool) {
+              if let e = CGEvent(keyboardEventSource: nil, virtualKey: 59, keyDown: down) {
+                e.type = .flagsChanged
+                e.flags = down ? CGEventFlags.maskControl : []
+                e.post(tap: .cghidEventTap)
+              }
+            }
+            tap(true); usleep(90_000)
+            tap(false); usleep(120_000)
+            tap(true); usleep(90_000)
+            tap(false)
+            print("DTAP-SENT")
+            exit(0)
+          }
+          if mode == "mod" {
+            // Hold/clear Control+Option from this TCC-trusted process, as
+            // TWO per-key flagsChanged events in physical order. The app's
+            // hold detector tracks modifier state PER KEYCODE (same family
+            // as the double-tap detector in doubles.c): one combined event
+            // carrying both masks never registered Option as down and the
+            // pills stayed unlit (36492772435 step 2, four trusted fires).
+            let down = args.count > 2 ? args[2].lowercased() == "down" : true
+            func fl(_ key: CGKeyCode, _ flags: CGEventFlags) {
+              if let e = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true) {
+                e.type = .flagsChanged
+                e.flags = flags
+                e.post(tap: .cghidEventTap)
+              }
+            }
+            if down {
+              fl(59, [.maskControl])                       // Control down
+              usleep(60_000)
+              fl(58, [.maskControl, .maskAlternate])       // Option down
+            } else {
+              fl(58, [.maskControl])                       // Option up
+              usleep(60_000)
+              fl(59, [])                                   // Control up
+            }
+            print(down ? "MOD-DOWN" : "MOD-UP")
+            exit(0)
+          }
+
+          let apps = NSRunningApplication.runningApplications(
+            withBundleIdentifier: "com.humansongs.clicky")
+          guard let app = apps.first else { print("NOPID"); exit(0) }
+          let appEl = AXUIElementCreateApplication(app.processIdentifier)
+
+          // FREEZE FIX (runs 36312820899/36314125991/36315053247/36316040232/
+          // 36316705292: VM-wide userland freeze at loop iters 7-8, T+~527-
+          // 775, always inside an axd call). Each axd invocation is a fresh
+          // process making ~1500 AXUIElementCopyAttributeValue calls; every
+          // connection leaves state in the app's AX server. After ~7 iters
+          // (~50 connections, ~10k AX queries) something in the
+          // app/HIServices XPC bridge wedges and takes userland with it.
+          // Fix: ONE persistent server process owns the sole AX connection;
+          // the shell talks to it over a FIFO. Reconnect only if the server
+          // dies. `server` mode: read one command per line, run the same
+          // per-command logic as one-shot mode, print one line, flush.
+          if mode == "server" {
+            setbuf(stdout, nil)
+            while let line = readLine() {
+              let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
+              let cmd = parts.first ?? ""
+              let q = parts.count > 1 ? parts[1].lowercased() : ""
+              switch cmd {
+              case "ping":
+                print("PONG")
+              case "trusted":
+                print(trustedNow() ? "YES" : "NO")
+              default:
+                hits.removeAll(); texts.removeAll(); visited = 0
+                dumpLines.removeAll()
+                walkMode = cmd   // let the walk collectors fire for this command
+                walk(appEl, 0)
+                switch cmd {
+                case "dump":
+                  // one line per command on the FIFO: encode the tree with
+                  // literal backslash-n; bash decodes with printf %b
+                  print(visited <= 1 ? "EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)" : dumpLines.joined(separator: "\\n"))
+                case "cardtext":
+                  print(texts.joined(separator: " ~ ").prefix(1200))
+                case "press", "find":
+                  if visited <= 1 { print("EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)"); break }
+                  let cands = cmd == "press"
+                    ? hits.filter { $0.role != "AXTextField" && $0.role != "AXTextArea" }
+                    : hits
+                  guard let b = (cands.filter { $0.enabled }.first ?? cands.first) else {
+                    print("NOTFOUND trusted=\(trustedNow()) scanned=\(visited)"); break
+                  }
+                  let cx = Int(b.pos.x + b.size.width / 2), cy = Int(b.pos.y + b.size.height / 2)
+                  if cmd == "find" { print("\(cx),\(cy)") }
+                  else if b.enabled, AXUIElementPerformAction(b.el, kAXPressAction as CFString) == .success {
+                    print("PRESSED \(b.role) '\(b.label.prefix(60))' at \(cx),\(cy)")
+                  } else if b.enabled {
+                    click(CGPoint(x: Double(cx), y: Double(cy)))
+                    print("CLICKED \(b.role) '\(b.label.prefix(60))' at \(cx),\(cy)")
+                  } else {
+                    print("PRESS-FAILED \(b.role) '\(b.label.prefix(60))' enabled=false at \(cx),\(cy)")
+                  }
+                default:
+                  print("USAGE")
+                }
+              }
+            }
+            exit(0)
+          }
+
+          func axStr(_ el: AXUIElement, _ a: String) -> String? {
+            var v: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(el, a as CFString, &v) == .success else { return nil }
+            return v as? String
+          }
+          func axChildren(_ el: AXUIElement) -> [AXUIElement] {
+            var v: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &v) == .success,
+                  let arr = v as? [AXUIElement] else { return [] }
+            return arr
+          }
+          func axEnabled(_ el: AXUIElement) -> Bool {
+            var v: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(el, kAXEnabledAttribute as CFString, &v) == .success,
+                  let b = v as? Bool else { return true }
+            return b
+          }
+          func axPoint(_ el: AXUIElement) -> CGPoint? {
+            var v: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(el, kAXPositionAttribute as CFString, &v) == .success,
+                  let cv = v, CFGetTypeID(cv) == AXValueGetTypeID(),
+                  AXValueGetType(cv as! AXValue) == .cgPoint else { return nil }
+            var p = CGPoint.zero
+            AXValueGetValue(cv as! AXValue, .cgPoint, &p)
+            return p
+          }
+          func axSize(_ el: AXUIElement) -> CGSize? {
+            var v: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &v) == .success,
+                  let cv = v, CFGetTypeID(cv) == AXValueGetTypeID(),
+                  AXValueGetType(cv as! AXValue) == .cgSize else { return nil }
+            var s = CGSize.zero
+            AXValueGetValue(cv as! AXValue, .cgSize, &s)
+            return s
+          }
+          func click(_ p: CGPoint) {
+            for t in [CGEventType.leftMouseDown, .leftMouseUp] {
+              if let e = CGEvent(mouseEventSource: nil, mouseType: t,
+                                 mouseCursorPosition: p, mouseButton: .left) {
+                e.post(tap: .cghidEventTap)
+                usleep(70000)
+              }
+            }
+          }
+
+          struct Hit { let el: AXUIElement; let role: String; let label: String
+                       let pos: CGPoint; let size: CGSize; let enabled: Bool }
+          var hits: [Hit] = []
+          var texts: [String] = []
+          var visited = 0
+          func walk(_ el: AXUIElement, _ depth: Int) {
+            guard visited < 1500, hits.count < 60 else { return }
+            visited += 1
+            let role = axStr(el, kAXRoleAttribute) ?? "?"
+            var parts: [String] = []
+            if let t = axStr(el, kAXTitleAttribute), !t.isEmpty { parts.append(t) }
+            if let d = axStr(el, kAXDescriptionAttribute), !d.isEmpty { parts.append(d) }
+            if let w = axStr(el, kAXValueAttribute), !w.isEmpty { parts.append(w) }
+            let label = String(parts.joined(separator: " | ").prefix(120))
+            let pos = axPoint(el) ?? CGPoint(x: -1, y: -1)
+            let size = axSize(el) ?? CGSize(width: -1, height: -1)
+            let enabled = axEnabled(el)
+            if walkMode == "dump" {
+              let ind = String(repeating: "  ", count: min(depth, 10))
+              dumpLines.append("\(ind)\(role) [\(enabled ? "on" : "off")] '\(label)' @ \(Int(pos.x)),\(Int(pos.y)) \(Int(size.width))x\(Int(size.height))")
+            }
+            if !query.isEmpty,
+               role == "AXButton" || role == "AXLink" || role == "AXMenuItem"
+               || role == "AXTextField" || role == "AXTextArea" {
+              if label.lowercased().contains(query) {
+                hits.append(Hit(el: el, role: role, label: label,
+                                pos: pos, size: size, enabled: enabled))
+              }
+            }
+            if walkMode == "cardtext", !label.isEmpty, pos.y >= 31, size.height > 0,
+               role == "AXStaticText" || role == "AXButton" || role == "AXMenuButton"
+               || role == "AXTextField" || role == "AXTextArea" {
+              texts.append(label.lowercased())
+            }
+            for c in axChildren(el) { walk(c, depth + 1) }
+          }
+
+          walk(appEl, 0)
           switch mode {
           case "dump":
             if visited <= 1 { print("EMPTY-TREE trusted=\(trustedNow()) scanned=\(visited)") } else { print(dumpLines.joined(separator: "\n")) }
