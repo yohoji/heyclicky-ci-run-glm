@@ -835,6 +835,12 @@ jobs:
             # lands on refresh_token_already_used and the app WIPES its
             # session (36495491402 / 36544001329: keys gone at fail time).
           curpair() {
+            # Wiped domain (rejected-callback cleanup): re-seed so the
+            # original pair gets another chance before falling back.
+            if ! defaults read com.humansongs.clicky supabaseRefreshToken >/dev/null 2>&1; then
+              defaults write com.humansongs.clicky supabaseAccessToken "$AT"
+              defaults write com.humansongs.clicky supabaseRefreshToken "$RT"
+            fi
             CURAT=$(defaults read com.humansongs.clicky supabaseAccessToken 2>/dev/null || echo "$AT")
             CURRT=$(defaults read com.humansongs.clicky supabaseRefreshToken 2>/dev/null || echo "$RT")
             [ -n "$CURAT" ] || CURAT="$AT"; [ -n "$CURRT" ] || CURRT="$RT"
