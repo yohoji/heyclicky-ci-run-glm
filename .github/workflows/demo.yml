@@ -842,7 +842,7 @@ jobs:
           # but harmless) + the fires below.
           defaults write com.humansongs.clicky supabaseAccessToken "$AT" 2>/dev/null || true
           defaults write com.humansongs.clicky supabaseRefreshToken "$RT" 2>/dev/null || true
-          \          opn "$HOME/HeyClicky.app"
+          opn "$HOME/HeyClicky.app"
           sleep 18
           { set +x; } 2>/dev/null
           fire_cb() {  # deliver the token callback with no scheme routing in the loop
